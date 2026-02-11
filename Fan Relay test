@@ -1,1 +1,20 @@
-print('Hello world')
+import RPi.GPIO as GPIO
+import time
+
+LED_PIN = 14
+
+GPIO.setwarnings(False)
+
+GPIO.setmode(GPIO.BCM)
+
+GPIO.setup(LED_PIN, GPIO.OUT)
+
+# simple 10seconds on and 10seconds off motion to test whether the relay is 
+# working
+while True:
+    GPIO.output(LED_PIN, GPIO.HIGH)
+    time.sleep(10)
+    GPIO.output(LED_PIN, GPIO.LOW)
+    time.sleep(10)
+    
+GPIO.cleanup(1)
