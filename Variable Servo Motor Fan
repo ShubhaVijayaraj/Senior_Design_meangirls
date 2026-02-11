@@ -1,0 +1,61 @@
+import RPi.GPIO as GPIO
+import time
+
+# ----------------------
+# Pin Definitions
+# ----------------------
+SERVO_PIN = 18      # PWM capable pin
+RELAY_PIN = 14      # Digital output for relay
+
+# ----------------------
+# GPIO Setup
+# ----------------------
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+GPIO.setup(SERVO_PIN, GPIO.OUT)
+GPIO.setup(RELAY_PIN, GPIO.OUT)
+
+# Initialize relay OFF
+GPIO.output(RELAY_PIN, GPIO.LOW)
+
+# Initialize PWM for servo (50Hz typical)
+pwm = GPIO.PWM(SERVO_PIN, 50)
+pwm.start(0)
+
+
+# ----------------------
+# Servo Function
+# ----------------------
+def set_angle(angle):
+    duty = 2 + (angle / 18)
+    pwm.ChangeDutyCycle(duty)
+    time.sleep(0.5)
+    pwm.ChangeDutyCycle(0)
+
+
+# ----------------------
+# Main Control Logic
+# ----------------------
+try:
+    print("Opening valve and turning relay ON...")
+    
+    set_angle(90)                  # Open valve
+    GPIO.output(RELAY_PIN, GPIO.HIGH)  # Turn relay ON
+    
+    time.sleep(5)
+
+    print("Closing valve and turning relay OFF...")
+    
+    set_angle(0)                   # Close valve
+    GPIO.output(RELAY_PIN, GPIO.LOW)   # Turn relay OFF
+    
+    time.sleep(2)
+
+except KeyboardInterrupt:
+    print("Stopped by user")
+
+finally:
+    pwm.stop()
+    GPIO.cleanup()
+    print("GPIO cleaned up")
