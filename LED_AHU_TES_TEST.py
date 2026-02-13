@@ -72,7 +72,7 @@ def TES_AHU_Simple(T_Amb, T_Des, T_Tank, Peak_State):
             # ---- Choose ONE of these rules ----
 
             # (A) Your earlier verbal rule: charge only if tank is LOW
-            if tankLow:
+            if not tankFull:
                 AHU_State = AHU_NORMAL
                 TES_State = TES_CHARGING
                 caseID = 3
@@ -183,3 +183,4 @@ except KeyboardInterrupt:
 finally:
     all_off()
     print("Outputs off. Exiting.")
+
