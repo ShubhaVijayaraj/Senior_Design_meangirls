@@ -1,3 +1,4 @@
+
 import RPi.GPIO as GPIO
 from gpiozero import Servo
 from gpiozero.pins.pigpio import PiGPIOFactory
@@ -30,44 +31,39 @@ GPIO.output(RELAY_PIN, GPIO.LOW)
 pwm = GPIO.PWM(SERVO_PIN,50)
 #pwm.start(7.5)
 
-
+#defining variables for system
+discharge_time = 2 # Valve open time, measured in seconds
+TES_idle_time = 2 #Valve closed time, measured in seconds
 # ----------------------
 # Servo Function
 # ----------------------
 def valve_open():
-    servo.max()
+    servo.value = -0.42
+    sleep(discharge_time)
 
 
 def valve_close():
-    servo.min()
+    servo.value = 0.37
+    sleep(TES_idle_time)
 
 # ----------------------
 # Main Control Logic
 # ----------------------
+
+
 try:
     while True:
     
         relay_state = GPIO.input(RELAY_PIN)
+        
         GPIO.output(RELAY_PIN, GPIO.HIGH)
         print("relay high supposedly")
-        sleep(3)
+        sleep(1)
         valve_open()
-        sleep(3)
         valve_close()
-        sleep(3)
         GPIO.output(RELAY_PIN, GPIO.LOW)
         print("relay low supposedly")
         sleep(3)
-
-        
-        #if relay_state == GPIO.HIGH:
-            #print("Valve Open...")
-            #valve_open()                  # Open valve
-  
-        
-        #else:
-            #valve_close()                  # Close valve
-            #print("Valve cLOSED...")
 
 
 finally:

@@ -1,20 +1,20 @@
 import RPi.GPIO as GPIO
 import time
 
-LED_PIN = 14
+RELAY_PIN = 23
 
 GPIO.setwarnings(False)
 
 GPIO.setmode(GPIO.BCM)
 
-GPIO.setup(LED_PIN, GPIO.OUT)
+GPIO.setup(RELAY_PIN, GPIO.OUT)
 
-# simple 10seconds on and 10seconds off motion to test whether the relay is 
+# simple 10 seconds on and 10 seconds off motion to test whether the relay is 
 # working
 while True:
-    GPIO.output(LED_PIN, GPIO.HIGH)
+    GPIO.output(RELAY_PIN, GPIO.HIGH)
     time.sleep(5)
-    GPIO.output(LED_PIN, GPIO.LOW)
+    GPIO.output(RELAY_PIN, GPIO.LOW)
     time.sleep(5)
     
 GPIO.cleanup(1)
