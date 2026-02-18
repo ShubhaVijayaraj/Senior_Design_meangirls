@@ -4,7 +4,7 @@ import time
 # ----------------------
 # Pin Definitions
 # ----------------------
-SERVO_PIN = 17      # PWM capable pin
+SERVO_PIN = 18      # PWM capable pin
 RELAY_PIN = 14      # Digital output for relay
 
 # ----------------------
@@ -19,42 +19,51 @@ GPIO.setup(RELAY_PIN, GPIO.OUT)
 # Initialize relay OFF
 GPIO.output(RELAY_PIN, GPIO.LOW)
 
+
 # Initialize PWM for servo (50Hz typical)
 pwm = GPIO.PWM(SERVO_PIN,50)
-pwm.start(0)
+pwm.start(7.5)
 
 
 # ----------------------
 # Servo Function
 # ----------------------
-def set_servo():
-    pwm.ChangeDutyCycle(7.5)
-    time.sleep(5)
+def valve_open():
+    pwm.ChangeDutyCycle(5.8)
 
 
+def valve_close():
+    pwm.ChangeDutyCycle(5)
 
 # ----------------------
 # Main Control Logic
 # ----------------------
 try:
     while True:
-        print("Opening valve and turning relay ON...")
-        
-        set_servo()                  # Open valve
-        GPIO.output(RELAY_PIN, GPIO.HIGH)  # Turn relay ON
-        
-        time.sleep(5)
+    
+        relay_state = GPIO.input(RELAY_PIN)
+        GPIO.output(RELAY_PIN, GPIO.HIGH)
+        print("relay high supposedly")
+        time.sleep(3)
+        pwm.ChangeDutyCycle(5.8)
+        time.sleep(3)
+        GPIO.output(RELAY_PIN, GPIO.LOW)
+        print("relay low supposedly")
+        time.sleep(3)
 
-        print("Closing valve and turning relay OFF...")
         
-        set_servo()                  # Close valve
-        GPIO.output(RELAY_PIN, GPIO.LOW)   # Turn relay OFF
+        #if relay_state == GPIO.HIGH:
+            #print("Valve Open...")
+            #valve_open()                  # Open valve
+  
         
-        time.sleep(5)
+        #else:
+            #valve_close()                  # Close valve
+            #print("Valve cLOSED...")
 
 
 finally:
     pwm.stop()
     GPIO.cleanup()
     print("GPIO cleaned up")
-#POOOOOOPPPPPP
+

@@ -1,9 +1,9 @@
 from gpiozero import LED
 
-VALVE_PIN  = 17
-BLOWER_PIN = 22
-PUMP_PIN   = 27
-HEATER_PIN = 23
+VALVE_PIN  = 17 
+BLOWER_PIN = 22 
+PUMP_PIN   = 27 
+HEATER_PIN = 23 
 
 valve_led  = LED(VALVE_PIN)
 blower_led = LED(BLOWER_PIN)

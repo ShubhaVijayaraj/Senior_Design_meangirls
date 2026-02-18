@@ -13,8 +13,8 @@ GPIO.setup(LED_PIN, GPIO.OUT)
 # working
 while True:
     GPIO.output(LED_PIN, GPIO.HIGH)
-    time.sleep(10)
+    time.sleep(5)
     GPIO.output(LED_PIN, GPIO.LOW)
-    time.sleep(10)
+    time.sleep(5)
     
 GPIO.cleanup(1)

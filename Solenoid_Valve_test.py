@@ -1,5 +1,6 @@
 import RPi.GPIO as GPIO
 import time
+from gpiozero import Servo
 
 # ----------------------
 # Pin Definitions
@@ -19,40 +20,32 @@ GPIO.setup(RELAY_PIN, GPIO.OUT)
 # Initialize relay OFF
 GPIO.output(RELAY_PIN, GPIO.LOW)
 
+
 # Initialize PWM for servo (50Hz typical)
 pwm = GPIO.PWM(SERVO_PIN,50)
-pwm.start(0)
+pwm.start(5)
 
 
 # ----------------------
 # Servo Function
 # ----------------------
 def valve_open():
-    pwm.ChangeDutyCycle(7.5)
-    time.sleep(5)
+    pwm.ChangeDutyCycle(5.8)
 
 
 def valve_close():
     pwm.ChangeDutyCycle(5)
-    time.sleep(5)
+
 # ----------------------
 # Main Control Logic
 # ----------------------
 try:
-    while True:
-        print("Valve Open...")
-        
-        valve_open()                  # Open valve
-        GPIO.output(RELAY_PIN, GPIO.HIGH)  # Turn relay ON
-        
-        time.sleep(5)
 
-        print("Valve closed supposedy...")
         
-        valve_close()                  # Close valve
-        GPIO.output(RELAY_PIN, GPIO.LOW)   # Turn relay OFF
-        
-        time.sleep(5)
+        pwm.ChangeDutyCycle(5.83)
+        print("trying")
+        time.sleep(10)
+        print("now at 90")
 
 
 finally:
