@@ -1,11 +1,17 @@
 import RPi.GPIO as GPIO
-import time
+from gpiozero import Servo
+from gpiozero.pins.pigpio import PiGPIOFactory
+from time import sleep
+
+factory = PiGPIOFactory()
+servo = Servo(17, min_pulse_width = 0.0005, max_pulse_width = 0.0025,
+              pin_factory=factory)
 
 # ----------------------
 # Pin Definitions
 # ----------------------
-SERVO_PIN = 18      # PWM capable pin
-RELAY_PIN = 14      # Digital output for relay
+SERVO_PIN = 17      # PWM capable pin
+RELAY_PIN = 23      # Digital output for relay
 
 # ----------------------
 # GPIO Setup
@@ -22,18 +28,18 @@ GPIO.output(RELAY_PIN, GPIO.LOW)
 
 # Initialize PWM for servo (50Hz typical)
 pwm = GPIO.PWM(SERVO_PIN,50)
-pwm.start(7.5)
+#pwm.start(7.5)
 
 
 # ----------------------
 # Servo Function
 # ----------------------
 def valve_open():
-    pwm.ChangeDutyCycle(5.8)
+    servo.max()
 
 
 def valve_close():
-    pwm.ChangeDutyCycle(5)
+    servo.min()
 
 # ----------------------
 # Main Control Logic
@@ -44,12 +50,14 @@ try:
         relay_state = GPIO.input(RELAY_PIN)
         GPIO.output(RELAY_PIN, GPIO.HIGH)
         print("relay high supposedly")
-        time.sleep(3)
-        pwm.ChangeDutyCycle(5.8)
-        time.sleep(3)
+        sleep(3)
+        valve_open()
+        sleep(3)
+        valve_close()
+        sleep(3)
         GPIO.output(RELAY_PIN, GPIO.LOW)
         print("relay low supposedly")
-        time.sleep(3)
+        sleep(3)
 
         
         #if relay_state == GPIO.HIGH:
@@ -63,7 +71,5 @@ try:
 
 
 finally:
-    pwm.stop()
-    GPIO.cleanup()
-    print("GPIO cleaned up")
+    servo.value = None
 
