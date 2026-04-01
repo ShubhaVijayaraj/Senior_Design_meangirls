@@ -192,7 +192,7 @@ def actuation_fsm(ahu_state: AHUState, tes_state: TESState):
 
     elif tes_state == TESState.CHARGING:
         valve_cmd = False
-        pump_cmd = True      # circulate while heating
+        pump_cmd = False     # circulate while heating
         heater_cmd = True
 
     elif tes_state == TESState.DISCHARGE:
