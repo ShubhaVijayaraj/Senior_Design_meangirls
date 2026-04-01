@@ -15,8 +15,8 @@ BASE_DIR = '/sys/bus/w1/devices/'
 
 # Replace these with your real sensor IDs
 SENSOR_MAP = {
-    "28-xxxxxxxxxxxx": "room",
-    "28-yyyyyyyyyyyy": "tank",
+    "28-00000034c7d5": "room",
+    "28-00000037e0c4": "tank",
 }
 
 LOG_FILE = "tes_ahu_log.csv"
