@@ -6,7 +6,10 @@ import time
 import subprocess
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Qt5Agg')  # Forces Matplotlib to use the Qt framework
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure # Added this import
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from datetime import datetime
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -83,7 +86,12 @@ class GraphPage(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QtWidgets.QVBoxLayout(self)
-        self.figure, self.ax = plt.subplots(figsize=(5, 4), dpi=100)
+        
+        # FIXED: Use Figure() and add_subplot() instead of plt.subplots()
+        # This prevents the secondary window from opening.
+        self.figure = Figure(figsize=(5, 4), dpi=100)
+        self.ax = self.figure.add_subplot(111)
+        
         self.canvas = FigureCanvas(self.figure)
         self.layout.addWidget(self.canvas)
         self.apply_style()
