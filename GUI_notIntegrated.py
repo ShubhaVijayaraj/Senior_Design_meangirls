@@ -1,6 +1,9 @@
 import sys
 import pandas as pd
+import matplotlib
+matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from datetime import datetime
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -11,8 +14,9 @@ class GraphPage(QtWidgets.QWidget):
         super().__init__(parent)
         self.layout = QtWidgets.QVBoxLayout(self)
         
-        # Figure setup to match your dark theme
-        self.figure, self.ax = plt.subplots(figsize=(5, 4), dpi=100)
+        # FIX: Use Figure() directly to prevent a second window from popping up
+        self.figure = Figure(figsize=(5, 4), dpi=100)
+        self.ax = self.figure.add_subplot(111)
         self.canvas = FigureCanvas(self.figure)
         self.layout.addWidget(self.canvas)
         self.apply_style()
@@ -28,24 +32,17 @@ class GraphPage(QtWidgets.QWidget):
         self.ax.yaxis.label.set_color('#7a869a')
 
     def load_excel(self, file_path, is_celsius=True):
-        """Updates graph with Excel data, filters last 24h, and adjusts units"""
         try:
-            # 1. Read Excel and handle timestamps
             df = pd.read_excel(file_path)
             df['Time'] = pd.to_datetime(df['Time'])
-            
-            # 2. Filter for the latest 24 hours of data
             latest_time = df['Time'].max()
             start_time = latest_time - pd.Timedelta(hours=24)
             df_filtered = df[df['Time'] > start_time].copy()
-            
-            # 3. Create a Relative Hour for the X-axis (0 to 24)
             df_filtered['Relative_Hour'] = (df_filtered['Time'] - start_time).dt.total_seconds() / 3600
 
             self.ax.clear()
             self.apply_style()
             
-            # 4. Handle Temperature Units (Column name: Temperature)
             y_data = df_filtered['Temperature']
             y_label = "Degrees (°C)"
             y_min, y_max = 16, 30
@@ -55,18 +52,13 @@ class GraphPage(QtWidgets.QWidget):
                 y_label = "Degrees (°F)"
                 y_min, y_max = 60.8, 86
             
-            # 5. Plot using Relative_Hour
             self.ax.plot(df_filtered['Relative_Hour'], y_data, color='#AAFF7F', linewidth=2, marker='o', markersize=3)
-            
             self.ax.set_title("Temperature Reading Log (Latest 24H)", color='#AAFF7F', fontweight='bold', fontsize=14)
             self.ax.set_xlabel("Time (Hours)")
             self.ax.set_ylabel(y_label)
-            
-            # Fixed Ranges
             self.ax.set_xlim(0, 24)
             self.ax.set_xticks(range(0, 25, 4))
             self.ax.set_ylim(y_min, y_max)
-            
             self.ax.grid(True, color='#2D3848', linestyle='--', alpha=0.5)
             self.canvas.draw()
         except Exception as e:
@@ -80,8 +72,6 @@ class DashboardWidget(QtWidgets.QWidget):
     def __init__(self, parent):
         super().__init__(parent)
         self.p = parent
-
-        # --- STATE LISTS ---
         self.modes_ctrl = ["SMART", "MANUAL"]
         self.idx_ctrl = 0
         self.modes_sys = ["HEAT", "COOL"]
@@ -90,13 +80,10 @@ class DashboardWidget(QtWidgets.QWidget):
         self.idx_fan = 0 
         self.modes_state = ["IDLE", "CHARGING", "DISCHARGING"]
         self.idx_state = 0 
-
         self.init_ui()
 
     def init_ui(self):
         W, H = 820, 480
-
-        # --- TOP BAR & TITLE ---
         self.date_lbl = QtWidgets.QLabel(self)
         self.date_lbl.setGeometry(20, 15, 250, 25)
         self.date_lbl.setStyleSheet("color: #7a869a; font-size: 14px; background: transparent;")
@@ -106,7 +93,6 @@ class DashboardWidget(QtWidgets.QWidget):
         self.time_lbl.setAlignment(QtCore.Qt.AlignCenter)
         self.time_lbl.setStyleSheet("color: white; font-size: 14px; background: transparent;")
 
-        # --- PEAK BUTTON ---
         self.peak_btn = QtWidgets.QPushButton("PEAK", self)
         self.peak_btn.setGeometry(W - 130, 15, 110, 25)
         self.peak_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -118,7 +104,6 @@ class DashboardWidget(QtWidgets.QWidget):
         self.main_title.setAlignment(QtCore.Qt.AlignCenter)
         self.main_title.setStyleSheet("color: rgb(170, 255, 127); font-size: 24px; font-weight: bold; background: transparent;")
 
-        # --- LABELS & BUTTONS ---
         label_style = "color: white; font-size: 12px; font-weight: bold; background: transparent;"
         btn_w = 160
         
@@ -139,23 +124,11 @@ class DashboardWidget(QtWidgets.QWidget):
         self.lbl_state.setGeometry(W - 190, 230, 160, 20); self.lbl_state.setAlignment(QtCore.Qt.AlignRight); self.lbl_state.setStyleSheet(label_style)
         self.btn_state_val = self.make_styled_button(self.modes_state[0], W - 190, 260, btn_w, active=False)
 
-        # --- CENTER AREA ---
         self.temp_val_btn = QtWidgets.QPushButton(self)
         self.temp_val_btn.setGeometry(int(W/2) - 150, 185, 300, 100)
         self.temp_val_btn.clicked.connect(self.p.toggle_units)
         self.temp_val_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.temp_val_btn.setStyleSheet("""
-            QPushButton {
-                color: white; 
-                font-size: 75px; 
-                font-weight: bold; 
-                background: transparent; 
-                border: none;
-            }
-            QPushButton:hover {
-                color: rgba(255, 255, 255, 180); 
-            }
-        """)
+        self.temp_val_btn.setStyleSheet("QPushButton { color: white; font-size: 75px; font-weight: bold; background: transparent; border: none; }")
 
         self.set_text = QtWidgets.QLabel("set", self)
         self.set_text.setGeometry(0, 275, W, 30); self.set_text.setAlignment(QtCore.Qt.AlignCenter)
@@ -165,14 +138,7 @@ class DashboardWidget(QtWidgets.QWidget):
         self.curr_text.setGeometry(0, 425, W, 30); self.curr_text.setAlignment(QtCore.Qt.AlignCenter)
         self.curr_text.setStyleSheet("color: white; font-size: 18px; background: transparent;")
 
-        # --- PILL BUTTONS ---
-        pill_style = """
-            QPushButton { 
-                background: transparent; color: rgb(110, 150, 200); 
-                border: 2px solid rgb(70, 100, 140); border-radius: 20px; font-size: 24px; 
-            }
-            QPushButton:hover { border: 2px solid rgb(110, 150, 200); background-color: rgba(110, 150, 200, 25); }
-        """
+        pill_style = "QPushButton { background: transparent; color: rgb(110, 150, 200); border: 2px solid rgb(70, 100, 140); border-radius: 20px; font-size: 24px; } QPushButton:hover { border: 2px solid rgb(110, 150, 200); background-color: rgba(110, 150, 200, 25); }"
         self.minus_btn = QtWidgets.QPushButton("—", self)
         self.minus_btn.setGeometry(int(W/2) - 135, 375, 85, 42); self.minus_btn.clicked.connect(self.p.dec_temp)
         self.minus_btn.setStyleSheet(pill_style); self.minus_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -186,37 +152,37 @@ class DashboardWidget(QtWidgets.QWidget):
         btn.setGeometry(x, y, width, 55)
         if active:
             btn.setCursor(QtCore.Qt.PointingHandCursor)
-            btn.setStyleSheet("""
-                QPushButton { background-color: rgb(45, 56, 72); color: white; border-radius: 12px; font-size: 18px; font-weight: bold; }
-                QPushButton:hover { background-color: rgb(65, 80, 105); border: 1px solid rgb(170, 255, 127); }
-            """)
+            btn.setStyleSheet("QPushButton { background-color: rgb(45, 56, 72); color: white; border-radius: 12px; font-size: 18px; font-weight: bold; } QPushButton:hover { background-color: rgb(65, 80, 105); border: 1px solid rgb(170, 255, 127); }")
         else:
-            btn.setStyleSheet("""
-                QPushButton { background-color: rgb(30, 35, 45); color: rgb(120, 130, 150); border-radius: 12px; font-size: 18px; font-weight: bold; border: 1px solid rgb(50, 60, 75); }
-            """)
+            btn.setStyleSheet("QPushButton { background-color: rgb(30, 35, 45); color: rgb(120, 130, 150); border-radius: 12px; font-size: 18px; font-weight: bold; border: 1px solid rgb(50, 60, 75); }")
         return btn
 
     def toggle_ctrl(self):
         self.idx_ctrl = (self.idx_ctrl + 1) % len(self.modes_ctrl)
-        mode_text = self.modes_ctrl[self.idx_ctrl]
-        self.btn_ctrl.setText(mode_text)
+        self.btn_ctrl.setText(self.modes_ctrl[self.idx_ctrl])
         self.update()
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         rect = QtCore.QRect(int(820/2) - 130, 120, 260, 260)
+        
+        # Static background arc
         painter.setPen(QtGui.QPen(QtGui.QColor(45, 56, 72), 12, cap=QtCore.Qt.RoundCap))
         painter.drawArc(rect, 225 * 16, -270 * 16)
         
-        ratio = (self.p.set_temp_c - self.p.min_temp_c) / (self.p.max_temp_c - self.p.min_temp_c)
-        current_span = int(-270 * 16 * (max(0, min(1, ratio))))
+        # FIX: Proper Ratio calculation for 16-30 range
+        ratio = (self.p.set_temp_c - 16) / (30 - 16)
+        ratio = max(0, min(1, ratio))
+        
+        # FIX: Gradient mapped to rectangle bounds for correct color span
         grad = QtGui.QLinearGradient(rect.left(), rect.top(), rect.right(), rect.top())
         grad.setColorAt(0.0, QtGui.QColor(0, 150, 255))
         grad.setColorAt(0.6, QtGui.QColor(255, 80, 80))
         grad.setColorAt(1.0, QtGui.QColor(255, 0, 0))
+        
         painter.setPen(QtGui.QPen(QtGui.QBrush(grad), 14, cap=QtCore.Qt.RoundCap))
-        painter.drawArc(rect, 225 * 16, current_span)
+        painter.drawArc(rect, 225 * 16, int(-270 * 16 * ratio))
 
     def update_ui_elements(self):
         now = datetime.now()
@@ -238,9 +204,7 @@ class ThermostatApp(QtWidgets.QMainWindow):
         self.setFixedSize(900, 480)
         self.setStyleSheet("background-color: rgb(27, 34, 47);")
         self.min_temp_c, self.max_temp_c, self.set_temp_c = 16, 30, 24
-        self.current_temp_c, self.is_celsius = 20.0, True 
-        
-        self.peak_state = True # Start in Peak mode
+        self.current_temp_c, self.is_celsius, self.peak_state = 20.0, True, True 
 
         self.central_widget = QtWidgets.QWidget()
         self.setCentralWidget(self.central_widget)
@@ -249,7 +213,6 @@ class ThermostatApp(QtWidgets.QMainWindow):
         self.sidebar.setStyleSheet("background-color: rgb(15, 20, 28); border-right: 1px solid rgb(70, 100, 140);")
         
         sidebar_layout = QtWidgets.QVBoxLayout(self.sidebar)
-        # UPDATED: Icon changed for third page to ⚡
         for i, icon in enumerate(["🏠", "📈", "⚡"]):
             btn = QtWidgets.QPushButton(icon); btn.setFixedSize(60, 60)
             btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -260,18 +223,12 @@ class ThermostatApp(QtWidgets.QMainWindow):
 
         self.pages = QtWidgets.QStackedWidget(self.central_widget)
         self.pages.setGeometry(80, 0, 820, 480)
-        
-        self.page1 = DashboardWidget(self)
-        self.page2 = GraphPage() 
-        self.page3 = QtWidgets.QWidget() 
+        self.page1, self.page2, self.page3 = DashboardWidget(self), GraphPage(), QtWidgets.QWidget() 
         
         l3 = QtWidgets.QLabel("⚡ System Diagram", self.page3)
         l3.setStyleSheet("color: white; font-size: 20px;"); l3.setGeometry(0,0,820,480); l3.setAlignment(QtCore.Qt.AlignCenter)
 
-        self.pages.addWidget(self.page1)
-        self.pages.addWidget(self.page2)
-        self.pages.addWidget(self.page3)
-        
+        self.pages.addWidget(self.page1); self.pages.addWidget(self.page2); self.pages.addWidget(self.page3)
         self.current_excel = "temp_updated.xlsx"
         self.page2.load_excel(self.current_excel, self.is_celsius)
 
@@ -279,11 +236,8 @@ class ThermostatApp(QtWidgets.QMainWindow):
         self.timer.timeout.connect(self.update_time)
         self.timer.start(1000)
 
-    def make_page_changer(self, index):
-        return lambda: self.pages.setCurrentIndex(index)
-
+    def make_page_changer(self, index): return lambda: self.pages.setCurrentIndex(index)
     def update_time(self): self.page1.update_ui_elements()
-    
     def toggle_units(self): 
         self.is_celsius = not self.is_celsius
         self.page1.update()
@@ -295,15 +249,13 @@ class ThermostatApp(QtWidgets.QMainWindow):
 
     def inc_temp(self):
         if self.page1.btn_ctrl.text() != "SMART":
-            if self.set_temp_c < self.max_temp_c:
-                self.set_temp_c += 1
-                self.page1.update()
+            self.set_temp_c = min(self.max_temp_c, self.set_temp_c + 1)
+            self.page1.update()
 
     def dec_temp(self):
         if self.page1.btn_ctrl.text() != "SMART":
-            if self.set_temp_c > self.min_temp_c:
-                self.set_temp_c -= 1
-                self.page1.update()
+            self.set_temp_c = max(self.min_temp_c, self.set_temp_c - 1)
+            self.page1.update()
 
     def format_temp(self, temp_c):
         return f"{int(temp_c)}°C" if self.is_celsius else f"{int((temp_c * 9/5) + 32)}°F"
