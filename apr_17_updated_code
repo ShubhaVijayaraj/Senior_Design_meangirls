@@ -1,0 +1,183 @@
+# ================= IMPORTS =================
+import os
+import glob
+import csv
+import time
+import subprocess
+import tkinter as tk
+from tkinter import ttk
+from enum import IntEnum
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+# ================= GPIO SETUP =================
+try:
+    import RPi.GPIO as GPIO
+    GPIO_AVAILABLE = True
+except ImportError:
+    GPIO_AVAILABLE = False
+
+    class MockGPIO:
+        BCM="BCM"; OUT="OUT"; HIGH=1; LOW=0
+        def setmode(self,*a,**k): pass
+        def setwarnings(self,*a,**k): pass
+        def setup(self,*a,**k): pass
+        def output(self,*a,**k): pass
+        def cleanup(self,*a,**k): pass
+
+    GPIO = MockGPIO()
+
+# ================= LOAD 1-WIRE =================
+os.system('modprobe w1-gpio')
+os.system('modprobe w1-therm')
+
+BASE_DIR = '/sys/bus/w1/devices/'
+SENSOR_MAP = {"28-00000037009c": "tank"}
+
+# ================= STATES =================
+class AHUState(IntEnum):
+    IDLE=0; NORMAL=1; VENT=2
+
+class TESState(IntEnum):
+    IDLE=0; CHARGING=1; DISCHARGE=2
+
+# ================= GPIO =================
+RELAY_PIN_SOLENOID=23
+RELAY_PIN_FAN=24
+RELAY_PIN_PUMP=17
+RELAY_PIN_HEATER=27
+
+ACTIVE_HIGH={"solenoid":False,"fan":True,"pump":True,"heater":True}
+
+def relay_level(name,on):
+    return GPIO.HIGH if (ACTIVE_HIGH[name] and on) else GPIO.LOW if ACTIVE_HIGH[name] else (GPIO.LOW if on else GPIO.HIGH)
+
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    for pin in [RELAY_PIN_SOLENOID,RELAY_PIN_FAN,RELAY_PIN_PUMP,RELAY_PIN_HEATER]:
+        GPIO.setup(pin,GPIO.OUT)
+    set_outputs(False,False,False,False)
+
+def set_outputs(v,b,p,h):
+    GPIO.output(RELAY_PIN_SOLENOID,relay_level("solenoid",v))
+    GPIO.output(RELAY_PIN_FAN,relay_level("fan",b))
+    GPIO.output(RELAY_PIN_PUMP,relay_level("pump",p))
+    GPIO.output(RELAY_PIN_HEATER,relay_level("heater",h))
+
+# ================= SENSORS =================
+def read_temp(file):
+    try:
+        lines=open(file).readlines()
+        while lines[0].strip()[-3:]!='YES':
+            time.sleep(0.2)
+            lines=open(file).readlines()
+        return float(lines[1].split("t=")[1])/1000
+    except: return None
+
+def read_all_sensors():
+    data={}
+    for folder in glob.glob(BASE_DIR+'28*'):
+        did=folder.split('/')[-1]
+        t=read_temp(folder+'/w1_slave')
+        if t and did in SENSOR_MAP:
+            data[SENSOR_MAP[did]]=t
+    return data
+
+def read_temp_smtc(ch):
+    try:
+        r=subprocess.run(["smtc","analog","read",str(ch)],capture_output=True,text=True)
+        return float(r.stdout.strip())
+    except: return None
+
+# ================= FSM (UNCHANGED) =================
+def tes_ahu_simple(T_amb,T_des,T_tank,peak):
+    T_full=60; T_low=40
+    need=T_amb<T_des; low=T_tank<=T_low; full=T_tank>=T_full
+    ahu=AHUState.IDLE; tes=TESState.IDLE; case=0
+
+    if need:
+        if peak==1:
+            if not low: ahu,tes,case=AHUState.VENT,TESState.DISCHARGE,1
+            else: ahu,tes,case=AHUState.NORMAL,TESState.IDLE,2
+        else:
+            if not full: ahu,tes,case=AHUState.NORMAL,TESState.CHARGING,3
+            else: ahu,tes,case=AHUState.NORMAL,TESState.IDLE,4
+    else:
+        if peak==1: case=5
+        else:
+            if not full: tes,case=TESState.CHARGING,6
+            else: case=7
+    return ahu,tes,case
+
+def actuation_fsm(a,t):
+    v=b=p=h=False
+    if t==TESState.CHARGING: p=h=True
+    elif t==TESState.DISCHARGE: v=p=True
+    if a==AHUState.VENT and t==TESState.DISCHARGE: b=True
+    return v,b,p,h
+
+# ================= GUI =================
+root=tk.Tk()
+root.title("Thermostat")
+root.geometry("800x500")
+root.configure(bg="#0b0f14")
+
+current_temp=tk.DoubleVar(value=22)
+target_temp=tk.DoubleVar(value=22)
+peak_state_var=tk.IntVar(value=1)
+daq_timer=tk.StringVar(value="Updating...")
+
+last_time=0
+cached=None
+
+# ================= UI =================
+label=tk.Label(root,textvariable=current_temp,font=("Helvetica",40),fg="white",bg="#0b0f14")
+label.pack(pady=40)
+
+timer_label=tk.Label(root,textvariable=daq_timer,fg="#3b82f6",bg="#0b0f14")
+timer_label.pack()
+
+# Peak buttons
+def set_peak(v):
+    peak_state_var.set(v)
+
+tk.Button(root,text="Peak",command=lambda:set_peak(1)).pack()
+tk.Button(root,text="Off-Peak",command=lambda:set_peak(0)).pack()
+
+# ================= CONTROL LOOP =================
+def loop():
+    global last_time,cached
+
+    now=time.time()
+
+    if now-last_time>30 or cached is None:
+        val=read_temp_smtc(5)
+        if val:
+            cached=val
+            last_time=now
+            timer_label.config(fg="#21d19f")
+            root.after(500,lambda:timer_label.config(fg="#3b82f6"))
+
+    if cached:
+        current_temp.set(round(cached,2))
+
+    remaining=int(max(0,30-(now-last_time)))
+    daq_timer.set(f"Next update in {remaining}s")
+
+    sensors=read_all_sensors()
+    tank=sensors.get("tank",22)
+
+    ahu,tes,case=tes_ahu_simple(current_temp.get(),target_temp.get(),tank,peak_state_var.get())
+    v,b,p,h=actuation_fsm(ahu,tes)
+
+    set_outputs(v,b,p,h)
+
+    root.after(2000,loop)
+
+# ================= START =================
+setup_gpio()
+loop()
+root.mainloop()

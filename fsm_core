@@ -1,0 +1,138 @@
+# fsm_core.py
+
+import os
+import glob
+import time
+import subprocess
+from enum import IntEnum
+
+# ==============================
+# 1-WIRE SETUP
+# ==============================
+os.system('modprobe w1-gpio')
+os.system('modprobe w1-therm')
+
+BASE_DIR = '/sys/bus/w1/devices/'
+
+SENSOR_MAP = {
+    "28-00000037009c": "tank",
+}
+
+# ==============================
+# STATES
+# ==============================
+class AHUState(IntEnum):
+    IDLE = 0
+    NORMAL = 1
+    VENT = 2
+
+class TESState(IntEnum):
+    IDLE = 0
+    CHARGING = 1
+    DISCHARGE = 2
+
+# ==============================
+# SENSOR FUNCTIONS
+# ==============================
+def get_device_folders():
+    return glob.glob(BASE_DIR + '28*')
+
+def read_temp(device_file):
+    try:
+        with open(device_file, 'r') as f:
+            lines = f.readlines()
+
+        while lines[0].strip()[-3:] != 'YES':
+            time.sleep(0.2)
+            with open(device_file, 'r') as f:
+                lines = f.readlines()
+
+        equals_pos = lines[1].find('t=')
+        if equals_pos != -1:
+            return float(lines[1][equals_pos + 2:]) / 1000.0
+
+    except:
+        return None
+
+def read_all_sensors():
+    sensor_data = {}
+    for folder in get_device_folders():
+        device_id = folder.split('/')[-1]
+        temp = read_temp(folder + '/w1_slave')
+
+        if temp is not None and device_id in SENSOR_MAP:
+            sensor_data[SENSOR_MAP[device_id]] = temp
+
+    return sensor_data
+
+def read_temp_smtc(channel):
+    result = subprocess.run(
+        ["smtc", "analog", "read", str(channel)],
+        capture_output=True,
+        text=True
+    )
+    try:
+        return float(result.stdout.strip())
+    except:
+        return None
+
+# ==============================
+# FSM LOGIC
+# ==============================
+def tes_ahu_simple(T_amb, T_des, T_tank, peak_state):
+    T_full = 60.0
+    T_low = 40.0
+
+    need_heat = T_amb < T_des
+    tank_low = T_tank <= T_low
+    tank_full = T_tank >= T_full
+
+    ahu_state = AHUState.IDLE
+    tes_state = TESState.IDLE
+    case_id = 0
+
+    if need_heat:
+        if peak_state == 1:
+            if not tank_low:
+                ahu_state = AHUState.VENT
+                tes_state = TESState.DISCHARGE
+                case_id = 1
+            else:
+                ahu_state = AHUState.NORMAL
+                tes_state = TESState.IDLE
+                case_id = 2
+        else:
+            if not tank_full:
+                ahu_state = AHUState.NORMAL
+                tes_state = TESState.CHARGING
+                case_id = 3
+            else:
+                ahu_state = AHUState.NORMAL
+                tes_state = TESState.IDLE
+                case_id = 4
+    else:
+        if peak_state == 1:
+            case_id = 5
+        else:
+            if not tank_full:
+                tes_state = TESState.CHARGING
+                case_id = 6
+            else:
+                case_id = 7
+
+    return ahu_state, tes_state, case_id
+
+def actuation_fsm(ahu_state, tes_state):
+    valve_cmd = blower_cmd = pump_cmd = heater_cmd = False
+
+    if tes_state == TESState.CHARGING:
+        pump_cmd = True
+        heater_cmd = True
+    elif tes_state == TESState.DISCHARGE:
+        valve_cmd = True
+        pump_cmd = True
+
+    if ahu_state == AHUState.VENT:
+        blower_cmd = True
+
+    return valve_cmd, blower_cmd, pump_cmd, heater_cmd

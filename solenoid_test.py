@@ -1,7 +1,7 @@
 import RPi.GPIO as GPIO
 import time
 
-RELAY_PIN = 24
+RELAY_PIN = 23
 
 GPIO.setwarnings(False)
 

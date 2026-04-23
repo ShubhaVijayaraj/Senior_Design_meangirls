@@ -1,0 +1,43 @@
+# fsm_backend.py
+
+from fsm_core import *
+
+class ThermostatFSM:
+    def __init__(self):
+        self.peak_state = 1
+        self.T_des = 25.0
+
+    def set_inputs(self, peak_state=None, T_des=None):
+        if peak_state is not None:
+            self.peak_state = peak_state
+        if T_des is not None:
+            self.T_des = T_des
+
+    def step(self):
+        T_amb = read_temp_smtc(5)
+        sensors = read_all_sensors()
+        T_tank = sensors.get("tank")
+
+        if T_amb is None or T_tank is None:
+            return None
+
+        ahu_state, tes_state, case_id = tes_ahu_simple(
+            T_amb, self.T_des, T_tank, self.peak_state
+        )
+
+        valve_cmd, blower_cmd, pump_cmd, heater_cmd = actuation_fsm(
+            ahu_state, tes_state
+        )
+
+        if T_tank > 70:
+            heater_cmd = False
+
+        return {
+            "T_amb": T_amb,
+            "T_tank": T_tank,
+            "state": tes_state.name,
+            "fan": blower_cmd,
+            "pump": pump_cmd,
+            "heater": heater_cmd,
+            "valve": valve_cmd
+        }
