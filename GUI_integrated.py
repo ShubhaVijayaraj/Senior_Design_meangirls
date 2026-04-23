@@ -1,226 +1,309 @@
 import sys
+import os
+import glob
+import csv
+import time
+import subprocess
+import re
 import pandas as pd
 import matplotlib
+from collections import deque
 matplotlib.use('Qt5Agg')
-import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from datetime import datetime
+from enum import IntEnum
 from PyQt5 import QtWidgets, QtCore, QtGui
 
-# --- PEAK SCHEDULER PAGE CLASS (REDESIGNED) ---
+# =========================================================
+# 1. HARDWARE & GPIO SETUP
+# =========================================================
+try:
+    import RPi.GPIO as GPIO
+except Exception:
+    class MockGPIO:
+        BCM, OUT, HIGH, LOW = "BCM", "OUT", 1, 0
+        def setmode(self, m): pass
+        def setwarnings(self, f): pass
+        def setup(self, p, m): pass
+        def output(self, p, v): pass
+        def cleanup(self): pass
+    GPIO = MockGPIO()
+
+BASE_DIR = '/sys/bus/w1/devices/'
+SENSOR_MAP = {'28-00000037009c': 'tank'}
+LOG_FILE = 'tes_ahu_log.csv'
+
+RELAY_PIN_SOLENOID, RELAY_PIN_FAN = 23, 24
+RELAY_PIN_PUMP, RELAY_PIN_HEATER = 17, 27
+ACTIVE_HIGH = {'solenoid': False, 'fan': True, 'pump': True, 'heater': True}
+
+# =========================================================
+# 2. STATE DEFINITIONS & FSM LOGIC
+# =========================================================
+class AHUState(IntEnum): IDLE = 0; NORMAL = 1; VENT = 2
+class TESState(IntEnum): IDLE = 0; CHARGING = 1; DISCHARGE = 2
+
+def relay_level(dev, cmd):
+    return (GPIO.HIGH if cmd else GPIO.LOW) if ACTIVE_HIGH[dev] else (GPIO.LOW if cmd else GPIO.HIGH)
+
+def set_outputs(v, b, p, h):
+    GPIO.output(RELAY_PIN_SOLENOID, relay_level('solenoid', v))
+    GPIO.output(RELAY_PIN_FAN, relay_level('fan', b))
+    GPIO.output(RELAY_PIN_PUMP, relay_level('pump', p))
+    GPIO.output(RELAY_PIN_HEATER, relay_level('heater', h))
+
+def tes_ahu_simple(T_amb, T_des, T_tank, peak):
+    T_f, T_l = 60.0, 40.0
+    need_h = T_amb < T_des
+    t_low, t_full = T_tank <= T_l, T_tank >= T_f
+    ahu, tes, cid = AHUState.IDLE, TESState.IDLE, 0
+    if need_h:
+        if peak:
+            if not t_low: ahu, tes, cid = AHUState.VENT, TESState.DISCHARGE, 1
+            else: ahu, tes, cid = AHUState.NORMAL, TESState.IDLE, 2
+        else:
+            if not t_full: ahu, tes, cid = AHUState.NORMAL, TESState.CHARGING, 3
+            else: ahu, tes, cid = AHUState.NORMAL, TESState.IDLE, 4
+    else:
+        if peak: cid = 5
+        else:
+            if not t_full: tes, cid = TESState.CHARGING, 6
+            else: cid = 7
+    return ahu, tes, cid
+
+def actuation_fsm(ahu_state, tes_state):
+    v = b = p = h = False
+    if tes_state == TESState.CHARGING: p = h = True
+    elif tes_state == TESState.DISCHARGE: v = p = True
+    if ahu_state == AHUState.VENT and tes_state == TESState.DISCHARGE: b = True
+    return v, b, p, h
+
+# =========================================================
+# 3. GUI CLASSES
+# =========================================================
+
+class TouchSpinner(QtWidgets.QWidget):
+    valueChanged = QtCore.pyqtSignal(int)
+    def __init__(self, value=0, min_val=0, max_val=24, parent=None):
+        super().__init__(parent)
+        self.value, self.min_val, self.max_val = value, min_val, max_val
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(5)
+        btn_style = "QPushButton { background-color: #2D3848; color: #AAFF7F; border: 1px solid #46648C; font-size: 16px; font-weight: bold; border-radius: 4px; min-width: 30px; min-height: 30px; } QPushButton:pressed { background-color: #46648C; }"
+        self.btn_minus = QtWidgets.QPushButton("-"); self.btn_minus.setStyleSheet(btn_style); self.btn_minus.clicked.connect(self.decrement)
+        self.label = QtWidgets.QLabel(str(self.value)); self.label.setAlignment(QtCore.Qt.AlignCenter); self.label.setStyleSheet("color: white; font-size: 14px; font-weight: bold; min-width: 25px;")
+        self.btn_plus = QtWidgets.QPushButton("+"); self.btn_plus.setStyleSheet(btn_style); self.btn_plus.clicked.connect(self.increment)
+        layout.addWidget(self.btn_minus); layout.addWidget(self.label); layout.addWidget(self.btn_plus)
+    def increment(self):
+        if self.value < self.max_val: self.value += 1; self.label.setText(str(self.value)); self.valueChanged.emit(self.value)
+    def decrement(self):
+        if self.value > self.min_val: self.value -= 1; self.label.setText(str(self.value)); self.valueChanged.emit(self.value)
+
 class PeakSchedulerPage(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.layout = QtWidgets.QVBoxLayout(self)
-        self.layout.setContentsMargins(30, 20, 30, 20)
-        
+        self.layout = QtWidgets.QVBoxLayout(self); self.layout.setContentsMargins(30, 20, 30, 20)
         self.title = QtWidgets.QLabel("WEEKLY PEAK HOUR SETTINGS")
-        self.title.setStyleSheet("color: #AAFF7F; font-size: 22px; font-weight: bold; margin-bottom: 15px;")
-        self.title.setAlignment(QtCore.Qt.AlignCenter)
-        self.layout.addWidget(self.title)
-
-        self.table = QtWidgets.QTableWidget(7, 3)
-        self.table.setHorizontalHeaderLabels(["DAY OF WEEK", "PEAK WINDOW", "OFF-PEAK HOURS"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        
-        self.table.setStyleSheet("""
-            QTableWidget { 
-                background-color: #1B222F; 
-                color: white; 
-                border: 1px solid #46648C;
-                font-size: 14px;
-                border-radius: 10px;
-            }
-            QHeaderView::section { 
-                background-color: #2D3848; 
-                color: #AAFF7F; 
-                padding: 10px; 
-                font-weight: bold; 
-                border-bottom: 2px solid #46648C;
-                text-transform: uppercase;
-            }
-        """)
-        
+        self.title.setStyleSheet("color: #AAFF7F; font-size: 22px; font-weight: bold; margin-bottom: 15px;"); self.title.setAlignment(QtCore.Qt.AlignCenter); self.layout.addWidget(self.title)
+        self.table = QtWidgets.QTableWidget(7, 3); self.table.setHorizontalHeaderLabels(["DAY OF WEEK", "PEAK HOURS", "OFF-PEAK HOURS"])
+        self.table.verticalHeader().setVisible(False); self.table.setShowGrid(False); self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection); self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setStyleSheet("QTableWidget { background-color: #1B222F; color: white; border: 1px solid #46648C; font-size: 14px; border-radius: 10px; } QHeaderView::section { background-color: #2D3848; color: #AAFF7F; padding: 10px; font-weight: bold; border-bottom: 2px solid #46648C; text-transform: uppercase; }")
         days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         self.spinners = []
-
         for i, day in enumerate(days):
-            # Day label
-            day_item = QtWidgets.QTableWidgetItem(day)
-            day_item.setFont(QtGui.QFont("Arial", 11, QtGui.QFont.Bold))
-            self.table.setItem(i, 0, day_item)
-            
-            # SpinBox Container
-            spin_container = QtWidgets.QWidget()
-            spin_layout = QtWidgets.QHBoxLayout(spin_container)
-            spin_layout.setContentsMargins(10, 2, 10, 2)
-            
-            s_start = QtWidgets.QSpinBox(); s_start.setRange(0, 23); s_start.setValue(14)
-            s_end = QtWidgets.QSpinBox(); s_end.setRange(1, 24); s_end.setValue(20)
-            
-            box_style = """
-                QSpinBox { 
-                    background: #2D3848; color: white; border: 1px solid #46648C; 
-                    padding: 8px; font-size: 15px; border-radius: 5px; min-width: 60px;
-                }
-                QSpinBox::up-button, QSpinBox::down-button { width: 20px; }
-            """
-            s_start.setStyleSheet(box_style); s_end.setStyleSheet(box_style)
-            
-            sep = QtWidgets.QLabel("to"); sep.setStyleSheet("color: #7a869a;")
-            spin_layout.addWidget(s_start); spin_layout.addWidget(sep); spin_layout.addWidget(s_end)
-            self.table.setCellWidget(i, 1, spin_container)
-            
-            # Off-peak auto column
-            off_item = QtWidgets.QTableWidgetItem("0-14, 20-24")
-            off_item.setFlags(QtCore.Qt.ItemIsEnabled)
-            off_item.setForeground(QtGui.QColor("#7a869a"))
-            off_item.setTextAlignment(QtCore.Qt.AlignCenter)
-            self.table.setItem(i, 2, off_item)
-            
-            s_start.valueChanged.connect(lambda _, r=i: self.update_row(r))
-            s_end.valueChanged.connect(lambda _, r=i: self.update_row(r))
-            self.spinners.append((s_start, s_end))
-
-        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        self.table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        self.layout.addWidget(self.table)
-
+            self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(day))
+            cont = QtWidgets.QWidget(); lay = QtWidgets.QHBoxLayout(cont); lay.setContentsMargins(10, 2, 10, 2)
+            s_start, s_end = TouchSpinner(14, 0, 23), TouchSpinner(20, 1, 24)
+            lay.addWidget(s_start); lay.addWidget(QtWidgets.QLabel("to")); lay.addWidget(s_end); self.table.setCellWidget(i, 1, cont)
+            off = QtWidgets.QTableWidgetItem("0-14, 20-24"); off.setForeground(QtGui.QColor("#7a869a")); off.setTextAlignment(QtCore.Qt.AlignCenter); self.table.setItem(i, 2, off)
+            s_start.valueChanged.connect(lambda _, r=i: self.update_row(r)); s_end.valueChanged.connect(lambda _, r=i: self.update_row(r)); self.spinners.append((s_start, s_end))
+        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch); self.table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch); self.layout.addWidget(self.table)
     def update_row(self, row):
-        s_start, s_end = self.spinners[row]
-        start, end = s_start.value(), s_end.value()
-        off_peak_item = self.table.item(row, 2)
-        if start >= end:
-            off_peak_item.setText("Overlap Error")
-            off_peak_item.setForeground(QtGui.QColor("#FF5050"))
-            return
-        off_peak_item.setForeground(QtGui.QColor("#7a869a"))
-        txt = f"0-{start}, {end}-24"
-        if start == 0: txt = f"{end}-24"
-        if end == 24: txt = f"0-{start}"
-        off_peak_item.setText(txt)
+        s_s, s_e = self.spinners[row]; it = self.table.item(row, 2)
+        if s_s.value >= s_e.value: it.setText("Overlap Error"); it.setForeground(QtGui.QColor("#FF5050"))
+        else:
+            txt = f"0-{s_s.value}, {s_e.value}-24"
+            if s_s.value == 0: txt = f"{s_e.value}-24"
+            if s_e.value == 24: txt = f"0-{s_s.value}"
+            it.setText(txt); it.setForeground(QtGui.QColor("#7a869a"))
 
-# --- GRAPH PAGE CLASS ---
 class GraphPage(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.layout = QtWidgets.QVBoxLayout(self)
-        self.figure = Figure(figsize=(5, 4), dpi=100)
-        self.ax = self.figure.add_subplot(111)
-        self.canvas = FigureCanvas(self.figure)
-        self.layout.addWidget(self.canvas)
-        self.apply_style()
-
+        self.layout = QtWidgets.QVBoxLayout(self); self.figure = Figure(figsize=(5, 4), dpi=100); self.ax = self.figure.add_subplot(111); self.canvas = FigureCanvas(self.figure); self.layout.addWidget(self.canvas)
+        self.x_data = deque(maxlen=50)
+        self.y_enc = deque(maxlen=50)
+        self.y_tank = deque(maxlen=50)
+        self.y_desired = deque(maxlen=50)
+        self.start_time = time.time(); self.apply_style()
     def apply_style(self):
         theme_color = '#1B222F'; self.figure.patch.set_facecolor(theme_color); self.ax.set_facecolor(theme_color)
         for spine in self.ax.spines.values(): spine.set_color('#46648C')
         self.ax.tick_params(colors='white', labelsize=10)
         self.ax.xaxis.label.set_color('#7a869a'); self.ax.yaxis.label.set_color('#7a869a')
-
-    def load_excel(self, file_path, is_celsius=True):
-        try:
-            df = pd.read_excel(file_path); df['Time'] = pd.to_datetime(df['Time'])
-            latest_time = df['Time'].max(); start_time = latest_time - pd.Timedelta(hours=24)
-            df_filtered = df[df['Time'] > start_time].copy()
-            df_filtered['Relative_Hour'] = (df_filtered['Time'] - start_time).dt.total_seconds() / 3600
-            self.ax.clear(); self.apply_style()
-            y_data = df_filtered['Temperature']; y_min, y_max = (16, 30) if is_celsius else (60.8, 86)
-            if not is_celsius: y_data = (df_filtered['Temperature'] * 9/5) + 32
-            self.ax.plot(df_filtered['Relative_Hour'], y_data, color='#AAFF7F', linewidth=2, marker='o', markersize=3)
-            self.ax.set_title("Temperature Reading Log (Latest 24H)", color='#AAFF7F', fontweight='bold', fontsize=14)
-            self.ax.set_xlabel("Time (Hours)"); self.ax.set_ylabel("Degrees")
-            self.ax.set_xlim(0, 24); self.ax.set_xticks(range(0, 25, 4)); self.ax.set_ylim(y_min, y_max)
-            self.ax.grid(True, color='#2D3848', linestyle='--', alpha=0.5); self.canvas.draw()
-        except: pass
+    def update_live_data(self, enc_temp, tank_temp, desired_temp):
+        elapsed = time.time() - self.start_time
+        self.x_data.append(elapsed)
+        self.y_enc.append(enc_temp)
+        self.y_tank.append(tank_temp)
+        self.y_desired.append(desired_temp)
+        self.ax.clear()
+        self.apply_style()
+        self.ax.plot(list(self.x_data), list(self.y_enc), color='#AAFF7F', linewidth=2, label="Enclosure")
+        self.ax.plot(list(self.x_data), list(self.y_tank), color='#50A0FF', linewidth=2, label="Tank")
+        self.ax.plot(list(self.x_data), list(self.y_desired), color='#FF5050', linewidth=2, linestyle='--', label="Desired")
+        self.ax.set_title("Live Temperature Readings", color='#AAFF7F', fontweight='bold', fontsize=14)
+        self.ax.set_xlabel("Time (Seconds)"); self.ax.set_ylabel("Degrees (°C)")
+        self.ax.legend(facecolor='#1B222F', labelcolor='white', loc='upper left')
+        self.ax.grid(True, color='#2D3848', linestyle='--', alpha=0.5)
+        self.canvas.draw()
 
 class DashboardWidget(QtWidgets.QWidget):
-    def __init__(self, parent):
-        super().__init__(parent); self.p = parent; self.modes_ctrl = ["SMART", "MANUAL"]; self.idx_ctrl = 0; self.init_ui()
-
+    def __init__(self, parent): super().__init__(parent); self.p = parent; self.modes_ctrl = ["SMART", "MANUAL"]; self.idx_ctrl = 0; self.init_ui()
     def init_ui(self):
-        W, H = 820, 480
-        lbl_style = "color: white; font-size: 12px; font-weight: bold; background: transparent;"
-        
-        self.date_lbl = QtWidgets.QLabel(self); self.date_lbl.setGeometry(20, 15, 250, 25); self.date_lbl.setStyleSheet("color: #7a869a; font-size: 14px; background: transparent;")
+        W, H = 820, 480; lbl_style = "color: white; font-size: 12px; font-weight: bold; background: transparent;"
+        self.date_lbl = QtWidgets.QLabel(self); self.date_lbl.setGeometry(20, 15, 250, 25); self.date_lbl.setStyleSheet("color: white; font-size: 14px; background: transparent;")
         self.time_lbl = QtWidgets.QLabel(self); self.time_lbl.setGeometry(0, 15, W, 25); self.time_lbl.setAlignment(QtCore.Qt.AlignCenter); self.time_lbl.setStyleSheet("color: white; font-size: 14px; background: transparent;")
-        self.peak_btn = QtWidgets.QPushButton("PEAK", self); self.peak_btn.setGeometry(W - 130, 15, 110, 25); self.peak_btn.setCursor(QtCore.Qt.PointingHandCursor); self.peak_btn.clicked.connect(self.p.toggle_peak)
-        self.main_title = QtWidgets.QLabel("DC HOUSE THERMOSTAT", self); self.main_title.setGeometry(0, 50, W, 40); self.main_title.setAlignment(QtCore.Qt.AlignCenter); self.main_title.setStyleSheet("color: rgb(170, 255, 127); font-size: 24px; font-weight: bold; background: transparent;")
-
-        # --- RESTORED LABELS ---
+        self.peak_btn = QtWidgets.QPushButton("PEAK", self); self.peak_btn.setGeometry(W - 130, 15, 110, 25); self.peak_btn.clicked.connect(self.p.toggle_peak)
+        self.main_title = QtWidgets.QLabel("DC HOUSE THERMOSTAT", self); self.main_title.setGeometry(0, 50, W, 40); self.main_title.setAlignment(QtCore.Qt.AlignCenter); self.main_title.setStyleSheet("color: rgb(170, 255, 127); font-size: 24px; font-weight: bold;")
         self.l_ctrl = QtWidgets.QLabel("CONTROL MODE", self); self.l_ctrl.setGeometry(30, 110, 150, 20); self.l_ctrl.setStyleSheet(lbl_style)
         self.l_sys = QtWidgets.QLabel("SYSTEM MODE", self); self.l_sys.setGeometry(30, 230, 150, 20); self.l_sys.setStyleSheet(lbl_style)
         self.l_fan = QtWidgets.QLabel("FAN", self); self.l_fan.setGeometry(W - 190, 110, 160, 20); self.l_fan.setAlignment(QtCore.Qt.AlignRight); self.l_fan.setStyleSheet(lbl_style)
-        self.l_state = QtWidgets.QLabel("STATE", self); self.l_state.setGeometry(W - 190, 230, 160, 20); self.l_state.setAlignment(QtCore.Qt.AlignRight); self.l_state.setStyleSheet(lbl_style)
-
+        self.l_state = QtWidgets.QLabel("STATE", self); self.l_state.setGeometry(W - 240, 230, 210, 20); self.l_state.setAlignment(QtCore.Qt.AlignRight); self.l_state.setStyleSheet(lbl_style)
         self.btn_ctrl = self.make_styled_button("SMART", 30, 140, 160); self.btn_ctrl.clicked.connect(self.toggle_ctrl)
         self.btn_sys = self.make_styled_button("HEAT", 30, 260, 160, active=False)
         self.btn_fan_val = self.make_styled_button("OFF", W - 190, 140, 160, active=False)
-        self.btn_state_val = self.make_styled_button("IDLE", W - 190, 260, 160, active=False)
+        self.btn_state_val = self.make_styled_button("IDLE", W - 240, 255, 210, active=False); self.btn_state_val.setFixedHeight(75)
 
-        # DESIRED TEMP BUTTON (HOVER RESTORED)
-        self.temp_val_btn = QtWidgets.QPushButton(self); self.temp_val_btn.setGeometry(int(W/2) - 150, 185, 300, 100); self.temp_val_btn.clicked.connect(self.p.toggle_units)
-        self.temp_val_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.temp_val_btn.setStyleSheet("QPushButton { color: white; font-size: 75px; font-weight: bold; background: transparent; border: none; } QPushButton:hover { color: rgba(255, 255, 255, 180); }")
-        
-        self.curr_text = QtWidgets.QLabel(self); self.curr_text.setGeometry(0, 425, W, 30); self.curr_text.setAlignment(QtCore.Qt.AlignCenter); self.curr_text.setStyleSheet("color: white; font-size: 18px; background: transparent;")
-        pill_style = "QPushButton { background: transparent; color: rgb(110, 150, 200); border: 2px solid rgb(70, 100, 140); border-radius: 20px; font-size: 24px; } QPushButton:hover { border: 2px solid rgb(110, 150, 200); background-color: rgba(110, 150, 200, 25); }"
-        self.minus_btn = QtWidgets.QPushButton("—", self); self.minus_btn.setGeometry(int(W/2) - 135, 375, 85, 42); self.minus_btn.clicked.connect(self.p.dec_temp); self.minus_btn.setStyleSheet(pill_style)
-        self.plus_btn = QtWidgets.QPushButton("+", self); self.plus_btn.setGeometry(int(W/2) + 45, 375, 85, 42); self.plus_btn.clicked.connect(self.p.inc_temp); self.plus_btn.setStyleSheet(pill_style)
-
-    def make_styled_button(self, text, x, y, width, active=True):
-        btn = QtWidgets.QPushButton(text, self); btn.setGeometry(x, y, width, 55)
-        if active:
-            btn.setStyleSheet("QPushButton { background-color: rgb(45, 56, 72); color: white; border-radius: 12px; font-size: 18px; font-weight: bold; } QPushButton:hover { background-color: rgb(65, 80, 105); border: 1px solid rgb(170, 255, 127); }")
-        else:
-            btn.setStyleSheet("QPushButton { background-color: rgb(30, 35, 45); color: rgb(120, 130, 150); border-radius: 12px; font-size: 18px; font-weight: bold; border: 1px solid rgb(50, 60, 75); }")
+        self.temp_val_btn = QtWidgets.QPushButton(self); self.temp_val_btn.setGeometry(int(W/2) - 150, 185, 300, 100); self.temp_val_btn.clicked.connect(self.p.toggle_units); self.temp_val_btn.setStyleSheet("QPushButton { color: white; font-size: 75px; font-weight: bold; background: transparent; border: none; } QPushButton:hover { color: rgba(255, 255, 255, 180); }")
+        self.curr_text = QtWidgets.QLabel(self); self.curr_text.setGeometry(0, 425, W, 30); self.curr_text.setAlignment(QtCore.Qt.AlignCenter); self.curr_text.setStyleSheet("color: white; font-size: 18px;")
+        self.minus_btn = QtWidgets.QPushButton("—", self); self.minus_btn.setGeometry(int(W/2) - 135, 375, 85, 42); self.minus_btn.clicked.connect(self.p.dec_temp)
+        self.plus_btn = QtWidgets.QPushButton("+", self); self.plus_btn.setGeometry(int(W/2) + 45, 375, 85, 42); self.plus_btn.clicked.connect(self.p.inc_temp)
+    def make_styled_button(self, t, x, y, w, active=True):
+        btn = QtWidgets.QPushButton(t, self); btn.setGeometry(x, y, w, 55)
+        if active: btn.setStyleSheet("QPushButton { background-color: rgb(45, 56, 72); color: white; border-radius: 12px; font-size: 18px; font-weight: bold; } QPushButton:hover { background-color: rgb(65, 80, 105); border: 1px solid rgb(170, 255, 127); }")
+        else: btn.setStyleSheet("QPushButton { background-color: rgb(30, 35, 45); color: rgb(120, 130, 150); border-radius: 12px; font-size: 18px; font-weight: bold; border: 1px solid rgb(50, 60, 75); }")
         return btn
-
     def toggle_ctrl(self): self.idx_ctrl = (self.idx_ctrl + 1) % len(self.modes_ctrl); self.btn_ctrl.setText(self.modes_ctrl[self.idx_ctrl]); self.update()
     def paintEvent(self, event):
-        painter = QtGui.QPainter(self); painter.setRenderHint(QtGui.QPainter.Antialiasing); rect = QtCore.QRect(int(820/2) - 130, 120, 260, 260)
-        painter.setPen(QtGui.QPen(QtGui.QColor(45, 56, 72), 12, cap=QtCore.Qt.RoundCap)); painter.drawArc(rect, 225 * 16, -270 * 16)
-        ratio = max(0, min(1, (self.p.set_temp_c - 16) / (30 - 16)))
-        grad = QtGui.QLinearGradient(rect.left(), rect.top(), rect.right(), rect.top()); grad.setColorAt(0.0, QtGui.QColor(0, 150, 255)); grad.setColorAt(0.6, QtGui.QColor(255, 80, 80)); grad.setColorAt(1.0, QtGui.QColor(255, 0, 0))
+        painter = QtGui.QPainter(self); painter.setRenderHint(QtGui.QPainter.Antialiasing); sx, sy = self.width() / 820, self.height() / 480; painter.scale(sx, sy)
+        rect = QtCore.QRect(410 - 130, 120, 260, 260); painter.setPen(QtGui.QPen(QtGui.QColor(45, 56, 72), 12, cap=QtCore.Qt.RoundCap)); painter.drawArc(rect, 225 * 16, -270 * 16)
+        ratio = max(0, min(1, (self.p.set_temp_c - 16) / (45 - 16))); grad = QtGui.QLinearGradient(rect.left(), rect.top(), rect.right(), rect.top()); grad.setColorAt(0.0, QtGui.QColor(0, 150, 255)); grad.setColorAt(0.6, QtGui.QColor(255, 80, 80)); grad.setColorAt(1.0, QtGui.QColor(255, 0, 0))
         painter.setPen(QtGui.QPen(QtGui.QBrush(grad), 14, cap=QtCore.Qt.RoundCap)); painter.drawArc(rect, 225 * 16, int(-270 * 16 * ratio))
-
     def update_ui_elements(self):
-        now = datetime.now(); self.time_lbl.setText(now.strftime("%I:%M %p")); self.date_lbl.setText(now.strftime("%B %d, %Y"))
-        self.temp_val_btn.setText(self.p.format_temp(self.p.set_temp_c))
-        self.curr_text.setText(f"Currently {self.p.format_temp(self.p.current_temp_c)}")
-        color = "#FF5050" if self.p.peak_state else "#AAFF7F"
+        now = datetime.now(); self.time_lbl.setText(now.strftime("%I:%M %p")); self.date_lbl.setText(now.strftime("%B %d, %Y")); avg_scale = ((self.width() / 820) + (self.height() / 480)) / 2
+        self.temp_val_btn.setText(self.p.format_temp(self.p.set_temp_c)); self.curr_text.setText(f"Currently {self.p.format_temp(self.p.current_temp_c)}")
+        is_smart = self.btn_ctrl.text() == "SMART"; peak_color = "#FF5050" if self.p.peak_state else "#AAFF7F"
+        if is_smart:
+            self.peak_btn.setStyleSheet(f"color: {peak_color}; font-size: {int(14 * avg_scale)}px; font-weight: bold; background: transparent; border: none; text-align: right;"); self.peak_btn.setCursor(QtCore.Qt.ArrowCursor)
+        else:
+            self.peak_btn.setStyleSheet(f"QPushButton {{ color: {peak_color}; font-size: {int(14 * avg_scale)}px; font-weight: bold; background: transparent; border: none; text-align: right; }} QPushButton:hover {{ color: white; }}"); self.peak_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.peak_btn.setText("PEAK" if self.p.peak_state else "OFF-PEAK")
-        self.peak_btn.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: bold; background: transparent; border: none; text-align: right;")
+        pill_base = f"background: transparent; color: rgb(110, 150, 200); border: 2px solid rgb(70, 100, 140); border-radius: {int(20*avg_scale)}px; font-size: {int(24*avg_scale)}px;"
+        final_style = f"QPushButton {{ {pill_base} }}" if is_smart else f"QPushButton {{ {pill_base} }} QPushButton:hover {{ border: 2px solid rgb(110, 150, 200); background-color: rgba(110, 150, 200, 25); }}"
+        self.minus_btn.setCursor(QtCore.Qt.ArrowCursor if is_smart else QtCore.Qt.PointingHandCursor); self.plus_btn.setCursor(QtCore.Qt.ArrowCursor if is_smart else QtCore.Qt.PointingHandCursor)
+        self.minus_btn.setStyleSheet(final_style); self.plus_btn.setStyleSheet(final_style)
+        self.btn_fan_val.setText("ON" if self.p.blower_cmd else "OFF")
+        ahu_txt = "NORMAL" if self.p.ahu_state == AHUState.NORMAL else self.p.ahu_state.name
+        self.btn_state_val.setText(f"AHU: {ahu_txt}\nTES: {self.p.tes_state_text}")
+        self.btn_state_val.setStyleSheet(f"QPushButton {{ background-color: rgb(30, 35, 45); color: rgb(120, 130, 150); border-radius: 12px; font-size: {int(18 * avg_scale)}px; font-weight: bold; border: 1px solid rgb(50, 60, 75); padding: 5px; }}")
+
+class ScalingStack(QtWidgets.QStackedWidget):
+    def resizeEvent(self, event):
+        super().resizeEvent(event); sx, sy = self.width() / 820, self.height() / 480; avg = (sx + sy) / 2
+        for i in range(self.count()):
+            page = self.widget(i)
+            for c in page.findChildren(QtWidgets.QWidget):
+                if page.__class__.__name__ == "DashboardWidget":
+                    if not hasattr(c, '_orig_geo'): c._orig_geo = c.geometry()
+                    c.setGeometry(int(c._orig_geo.x()*sx), int(c._orig_geo.y()*sy), int(c._orig_geo.width()*sx), int(c._orig_geo.height()*sy))
+                if not hasattr(c, '_orig_style'): c._orig_style = c.styleSheet()
+                if c._orig_style and "font-size:" in c._orig_style:
+                    c.setStyleSheet(re.sub(r'font-size:\s*(\d+)px', lambda m: f'font-size: {int(int(m.group(1)) * avg)}px', c._orig_style))
+            if isinstance(page, PeakSchedulerPage):
+                f = page.table.font(); f.setPointSize(int(12 * avg)); page.table.setFont(f)
+                hf = page.table.horizontalHeader().font(); hf.setPointSize(int(11 * avg)); page.table.horizontalHeader().setFont(hf)
+
+# =========================================================
+# 4. THERMOSTAT APP
+# =========================================================
 
 class ThermostatApp(QtWidgets.QMainWindow):
     def __init__(self):
-        super().__init__(); self.setFixedSize(900, 480); self.setStyleSheet("background-color: rgb(27, 34, 47);")
-        self.min_temp_c, self.max_temp_c, self.set_temp_c, self.current_temp_c = 16, 30, 24, 20.0
+        super().__init__(); self.setMinimumSize(900, 480); self.setStyleSheet("background-color: rgb(27, 34, 47);")
+        self.min_temp_c, self.max_temp_c, self.set_temp_c = 16, 45, 24
+        self.current_temp_c, self.tank_temp_c = 20.0, 22.0
         self.is_celsius, self.peak_state = True, True
+        self.blower_cmd, self.tes_state_text = False, "IDLE"
+        self.ahu_state = AHUState.IDLE
+
+        GPIO.setmode(GPIO.BCM); GPIO.setwarnings(False)
+        for p in [RELAY_PIN_SOLENOID, RELAY_PIN_FAN, RELAY_PIN_PUMP, RELAY_PIN_HEATER]: GPIO.setup(p, GPIO.OUT)
+        if not os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'w', newline='') as f:
+                csv.writer(f).writerow(['timestamp','T_amb','T_des','T_tank','peak','ahu','tes','cid','v','b','p','h'])
+
         self.central_widget = QtWidgets.QWidget(); self.setCentralWidget(self.central_widget)
-        self.sidebar = QtWidgets.QFrame(self.central_widget); self.sidebar.setGeometry(0, 0, 80, 480); self.sidebar.setStyleSheet("background-color: rgb(15, 20, 28); border-right: 1px solid rgb(70, 100, 140);")
-        sidebar_layout = QtWidgets.QVBoxLayout(self.sidebar)
+        self.main_layout = QtWidgets.QHBoxLayout(self.central_widget); self.main_layout.setContentsMargins(0, 0, 0, 0); self.main_layout.setSpacing(0)
+        self.sidebar = QtWidgets.QFrame(); self.sidebar.setFixedWidth(80); self.sidebar.setStyleSheet("background-color: rgb(15, 20, 28); border-right: 1px solid rgb(70, 100, 140);")
+        s_lay = QtWidgets.QVBoxLayout(self.sidebar)
         for i, icon in enumerate(["🏠", "📈", "⚡"]):
             btn = QtWidgets.QPushButton(icon); btn.setFixedSize(60, 60); btn.setCursor(QtCore.Qt.PointingHandCursor); btn.setStyleSheet("font-size: 24px; color: white; background: transparent; border: none;")
-            btn.clicked.connect(self.make_page_changer(i)); sidebar_layout.addWidget(btn)
-        sidebar_layout.addStretch()
-        self.pages = QtWidgets.QStackedWidget(self.central_widget); self.pages.setGeometry(80, 0, 820, 480)
+            btn.clicked.connect(self.make_page_changer(i)); s_lay.addWidget(btn)
+        s_lay.addStretch(); self.pages = ScalingStack()
         self.page1, self.page2, self.page3 = DashboardWidget(self), GraphPage(), PeakSchedulerPage(self)
         self.pages.addWidget(self.page1); self.pages.addWidget(self.page2); self.pages.addWidget(self.page3)
-        self.current_excel = "temp_updated.xlsx"; self.page2.load_excel(self.current_excel, self.is_celsius)
-        self.timer = QtCore.QTimer(); self.timer.timeout.connect(self.update_time); self.timer.start(1000)
+        self.main_layout.addWidget(self.sidebar); self.main_layout.addWidget(self.pages)
+        self.timer = QtCore.QTimer(); self.timer.timeout.connect(self.global_update); self.timer.start(1000)
 
-    def make_page_changer(self, index): return lambda: self.pages.setCurrentIndex(index)
-    def update_time(self): self.page1.update_ui_elements()
-    def toggle_units(self): 
-        self.is_celsius = not self.is_celsius
-        self.page1.update(); self.page2.load_excel(self.current_excel, self.is_celsius)
-    def toggle_peak(self): self.peak_state = not self.peak_state; self.page1.update()
-    def inc_temp(self): self.set_temp_c = min(self.max_temp_c, self.set_temp_c + 1); self.page1.update()
-    def dec_temp(self): self.set_temp_c = max(self.min_temp_c, self.set_temp_c - 1); self.page1.update()
-    def format_temp(self, temp_c): return f"{int(temp_c)}°C" if self.is_celsius else f"{int((temp_c * 9/5) + 32)}°F"
+    def global_update(self):
+        try:
+            res = subprocess.run(['smtc', 'analog', 'read', '5'], capture_output=True, text=True, timeout=1)
+            self.current_temp_c = float(res.stdout.strip())
+        except: pass
+        for f in glob.glob(BASE_DIR + '28*'):
+            if f.split('/')[-1] in SENSOR_MAP:
+                try:
+                    with open(f + '/w1_slave', 'r') as s:
+                        lines = s.readlines()
+                        if 'YES' in lines[0]: self.tank_temp_c = float(lines[1][lines[1].find('t=')+2:]) / 1000.0
+                except: pass
+
+        if self.page1.btn_ctrl.text() == "SMART":
+            now = datetime.now(); s_s, s_e = self.page3.spinners[now.weekday()]
+            self.peak_state = (s_s.value <= now.hour < s_e.value)
+        
+        ahu, tes, cid = tes_ahu_simple(self.current_temp_c, self.set_temp_c, self.tank_temp_c, 1 if self.peak_state else 0)
+        v, b, p, h = actuation_fsm(ahu, tes)
+        if self.tank_temp_c > 70.0: h = False 
+        set_outputs(v, b, p, h)
+        
+        self.ahu_state = ahu
+        self.blower_cmd, self.tes_state_text = b, "DISCHARGING" if tes == TESState.DISCHARGE else tes.name
+
+        with open(LOG_FILE, 'a', newline='') as f:
+            csv.writer(f).writerow([datetime.now().strftime('%Y-%m-%d %H:%M:%S'), self.current_temp_c, self.set_temp_c, self.tank_temp_c, int(self.peak_state), ahu.name, tes.name, cid, v, b, p, h])
+        
+        self.page1.update_ui_elements()
+        # Restored Call to Live Graph Update
+        self.page2.update_live_data(self.current_temp_c, self.tank_temp_c, self.set_temp_c)
+
+    def make_page_changer(self, i): return lambda: self.pages.setCurrentIndex(i)
+    def toggle_units(self): self.is_celsius = not self.is_celsius; self.page1.update()
+    def toggle_peak(self):
+        if self.page1.btn_ctrl.text() != "SMART": self.peak_state = not self.peak_state; self.page1.update()
+    def inc_temp(self):
+        if self.page1.btn_ctrl.text() != "SMART": self.set_temp_c = min(self.max_temp_c, self.set_temp_c + 1); self.page1.update()
+    def dec_temp(self):
+        if self.page1.btn_ctrl.text() != "SMART": self.set_temp_c = max(self.min_temp_c, self.set_temp_c - 1); self.page1.update()
+    def format_temp(self, t): return f"{int(t)}°C" if self.is_celsius else f"{int((t * 9/5) + 32)}°F"
+    def closeEvent(self, event): 
+        try:
+            set_outputs(False, False, False, False)
+            GPIO.cleanup()
+        except: pass
+        event.accept()
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv); window = ThermostatApp(); window.show(); sys.exit(app.exec_())
