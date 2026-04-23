@@ -176,11 +176,18 @@ class DashboardWidget(QtWidgets.QWidget):
         self.l_ctrl = QtWidgets.QLabel("CONTROL MODE", self); self.l_ctrl.setGeometry(30, 110, 150, 20); self.l_ctrl.setStyleSheet(lbl_style)
         self.l_sys = QtWidgets.QLabel("SYSTEM MODE", self); self.l_sys.setGeometry(30, 230, 150, 20); self.l_sys.setStyleSheet(lbl_style)
         self.l_fan = QtWidgets.QLabel("FAN", self); self.l_fan.setGeometry(W - 190, 110, 160, 20); self.l_fan.setAlignment(QtCore.Qt.AlignRight); self.l_fan.setStyleSheet(lbl_style)
-        self.l_state = QtWidgets.QLabel("STATE", self); self.l_state.setGeometry(W - 190, 230, 160, 20); self.l_state.setAlignment(QtCore.Qt.AlignRight); self.l_state.setStyleSheet(lbl_style)
+        
+        # Widened and shifted STATE label
+        self.l_state = QtWidgets.QLabel("STATE", self); self.l_state.setGeometry(W - 240, 230, 210, 20); self.l_state.setAlignment(QtCore.Qt.AlignRight); self.l_state.setStyleSheet(lbl_style)
+        
         self.btn_ctrl = self.make_styled_button("SMART", 30, 140, 160); self.btn_ctrl.clicked.connect(self.toggle_ctrl)
         self.btn_sys = self.make_styled_button("HEAT", 30, 260, 160, active=False)
         self.btn_fan_val = self.make_styled_button("OFF", W - 190, 140, 160, active=False)
-        self.btn_state_val = self.make_styled_button("IDLE", W - 190, 260, 160, active=False)
+        
+        # Widened and Taller STATE button
+        self.btn_state_val = self.make_styled_button("IDLE", W - 240, 255, 210, active=False)
+        self.btn_state_val.setFixedHeight(75)
+        
         self.temp_val_btn = QtWidgets.QPushButton(self); self.temp_val_btn.setGeometry(int(W/2) - 150, 185, 300, 100); self.temp_val_btn.clicked.connect(self.p.toggle_units)
         self.temp_val_btn.setStyleSheet("QPushButton { color: white; font-size: 75px; font-weight: bold; background: transparent; border: none; } QPushButton:hover { color: rgba(255, 255, 255, 180); }")
         self.curr_text = QtWidgets.QLabel(self); self.curr_text.setGeometry(0, 425, W, 30); self.curr_text.setAlignment(QtCore.Qt.AlignCenter); self.curr_text.setStyleSheet("color: white; font-size: 18px;")
@@ -211,13 +218,11 @@ class DashboardWidget(QtWidgets.QWidget):
         self.date_lbl.setText(now.strftime("%B %d, %Y"))
         avg_scale = ((self.width() / 820) + (self.height() / 480)) / 2
         self.temp_val_btn.setText(self.p.format_temp(self.p.set_temp_c))
-        
         self.curr_text.setText(f"Currently {self.p.format_temp(self.p.current_temp_c)}")
         
         is_smart = self.btn_ctrl.text() == "SMART"
         peak_color = "#FF5050" if self.p.peak_state else "#AAFF7F"
         
-        # PEAK Button logic - Only hover if NOT smart
         if is_smart:
             self.peak_btn.setStyleSheet(f"color: {peak_color}; font-size: {int(14 * avg_scale)}px; font-weight: bold; background: transparent; border: none; text-align: right;")
             self.peak_btn.setCursor(QtCore.Qt.ArrowCursor)
@@ -226,6 +231,12 @@ class DashboardWidget(QtWidgets.QWidget):
             self.peak_btn.setCursor(QtCore.Qt.PointingHandCursor)
 
         self.peak_btn.setText("PEAK" if self.p.peak_state else "OFF-PEAK")
+
+        # AHU & TES dual row formatting with matching 18px font
+        ahu_status = "IDLE" 
+        tes_status = "IDLE"
+        self.btn_state_val.setText(f"AHU: {ahu_status}\nTES: {tes_status}")
+        self.btn_state_val.setStyleSheet(f"QPushButton {{ background-color: rgb(30, 35, 45); color: rgb(120, 130, 150); border-radius: 12px; font-size: {int(18 * avg_scale)}px; font-weight: bold; border: 1px solid rgb(50, 60, 75); padding: 5px; }}")
 
         pill_style_base = f"background: transparent; color: rgb(110, 150, 200); border: 2px solid rgb(70, 100, 140); border-radius: {int(20*avg_scale)}px; font-size: {int(24*avg_scale)}px;"
         if is_smart:
