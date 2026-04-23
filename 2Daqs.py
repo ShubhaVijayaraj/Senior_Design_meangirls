@@ -12,11 +12,11 @@ def read_temp(channel):
 while True:
     # Read both temperature sensors (now channels 5 and 6)
     thermostat_temp = read_temp(5)   # Room temp (thermostat)
-    inlet_temp = read_temp(6)        # Fan inlet temp
+    hex_temp = read_temp(6)        # Fan inlet temp
 
     # Print clearly labeled output
     print(f"Thermostat Temp (Room): {thermostat_temp}")
-    print(f"Fan Inlet Temp:         {inlet_temp}")
+    print(f"HEX Temp:         {hex_temp}")
     print("-------------------------------")
 
     time.sleep(5)

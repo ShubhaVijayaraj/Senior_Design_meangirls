@@ -6,9 +6,9 @@ This is an attempt to make a GUI.
 
 import tkinter as tk
 from tkinter import ttk
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+#import pandas as pd
+#import matplotlib.pyplot as plt
+#from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 #from enum import IntEnum
 #import time
 #import RPi.GPIO as GPIO

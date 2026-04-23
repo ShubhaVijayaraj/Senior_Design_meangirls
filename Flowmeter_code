@@ -29,10 +29,10 @@ class FlowSensor:
             self.flow_rate = self.pulse_count / 98.0  # L/min
             self.total_volume += self.flow_rate / 60.0  # Add to total (L)
             
-            print(f"Flow Rate: {self.flow_rate:.2f} L/min")
-            print(f"Total Volume: {self.total_volume:.2f} L")
+            print(f"Flow Rate: {self.flow_rate:.5f} L/min")
+            print(f"Total Volume: {self.total_volume:.5f} L")
             
             self.pulse_count = 0  # Reset counter
 
 # Usage
-sensor = FlowSensor(18)  # GPIO pin 18
+sensor = FlowSensor(17)  # GPIO pin 17
