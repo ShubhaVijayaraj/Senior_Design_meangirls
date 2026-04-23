@@ -1,0 +1,11 @@
+import pandas as pd
+
+df = pd.read_csv("hex_enclosure_test.csv")
+
+cp = 4186  # J/kg°C
+m_dot = 0.2  # kg/s (adjust based on pump)
+
+df["Q_W"] = m_dot * cp * (df["hex_outlet"] - df["hex_inlet"])
+
+print("Max HEX Power:", df["Q_W"].max())
+print("Avg HEX Power:", df["Q_W"].mean())
