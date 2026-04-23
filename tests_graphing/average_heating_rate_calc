@@ -1,6 +1,6 @@
 import pandas as pd
 
-df = pd.read_csv("your_file.csv")
+df = pd.read_csv("your_file.csv") # insert proper file name (probably from HEX_enclosure_test csv)
 
 # Convert timestamp
 df["timestamp"] = pd.to_datetime(df["timestamp"])
