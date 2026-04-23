@@ -1,0 +1,31 @@
+import pandas as pd
+
+df = pd.read_csv("your_file.csv")
+
+# Convert timestamp
+df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+# Sort just in case
+df = df.sort_values("timestamp")
+
+total_dT = 0
+total_dt = 0
+
+for i in range(len(df) - 1):
+    row1 = df.iloc[i]
+    row2 = df.iloc[i + 1]
+
+    if row1["tes_state"] == "DISCHARGE":
+        dT = row2["enclosure_temp_C"] - row1["enclosure_temp_C"]
+        dt = (row2["timestamp"] - row1["timestamp"]).total_seconds()
+
+        if dT > 0:  # only heating
+            total_dT += dT
+            total_dt += dt
+
+avg_rate_C_per_sec = total_dT / total_dt
+avg_rate_C_per_min = avg_rate_C_per_sec * 60
+time_per_degC_sec = 1 / avg_rate_C_per_sec
+
+print("Average heating rate:", avg_rate_C_per_min, "°C/min")
+print("Time per 1°C:", time_per_degC_sec, "sec")
