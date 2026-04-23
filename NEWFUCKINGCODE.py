@@ -20,10 +20,10 @@ LOG_FILE = "tes_ahu_log.csv"
 # REPLACE THESE IDS WITH YOUR REAL SENSOR IDS
 # =========================================================
 SENSOR_MAP = {
-    "28-aaaaaaaaaaaa": "wh_inlet",    # water heater inlet
-    "28-bbbbbbbbbbbb": "wh_outlet",   # water heater outlet
-    "28-cccccccccccc": "hex_inlet",   # heat exchanger inlet
-    "28-dddddddddddd": "hex_outlet",  # heat exchanger outlet
+    "28-00000034c7d5": "inlet_HEX",
+    "28-00000037e0c4": "outlet_HEX",
+    "28-00000037009c": "outlet_water_heater",
+    "28-0000005b080d": "inlet_waterh_heater",
 }
 
 # =========================================================
@@ -255,7 +255,7 @@ def read_desired_temperature():
 
 def read_peak_state():
     # replace later with your schedule logic
-    return 1
+    return 0
 
 
 # =========================================================

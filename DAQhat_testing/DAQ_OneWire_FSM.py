@@ -1,0 +1,363 @@
+import os
+import glob
+import csv
+import subprocess
+import time
+from enum import IntEnum
+import RPi.GPIO as GPIO
+
+# =========================================================
+# 1. LOAD 1-WIRE DRIVERS
+# =========================================================
+os.system('modprobe w1-gpio')
+os.system('modprobe w1-therm')
+
+BASE_DIR = '/sys/bus/w1/devices/'
+
+SENSOR_MAP = {
+    "28-00000034c7d5": "inlet_HEX",
+    "28-00000037e0c4": "outlet_HEX",
+    "28-00000037009c": "outlet_water_heater",
+    "28-0000005b080d": "inlet_waterh_heater",
+}
+
+LOG_FILE = "tes_ahu_log.csv"
+
+
+# 2. STATE DEFINITIONS
+class AHUState(IntEnum):
+    IDLE = 0
+    NORMAL = 1
+    VENT = 2
+
+
+class TESState(IntEnum):
+    IDLE = 0
+    CHARGING = 1
+    DISCHARGE = 2
+
+
+# 3. GPIO PIN DEFINITIONS
+RELAY_PIN_SOLENOID = 23
+RELAY_PIN_FAN = 24
+RELAY_PIN_PUMP = 17
+RELAY_PIN_HEATER = 27
+
+ACTIVE_HIGH = {
+    "solenoid": False,   # active LOW relay
+    "fan": True,
+    "pump": True,
+    "heater": True,
+}
+
+
+def relay_level(device_name: str, command_on: bool) -> int:
+    active_high = ACTIVE_HIGH[device_name]
+    if active_high:
+        return GPIO.HIGH if command_on else GPIO.LOW
+    else:
+        return GPIO.LOW if command_on else GPIO.HIGH
+
+
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+
+    GPIO.setup(RELAY_PIN_SOLENOID, GPIO.OUT)
+    GPIO.setup(RELAY_PIN_FAN, GPIO.OUT)
+    GPIO.setup(RELAY_PIN_PUMP, GPIO.OUT)
+    GPIO.setup(RELAY_PIN_HEATER, GPIO.OUT)
+
+    set_outputs(False, False, False, False)
+
+
+def set_outputs(valve_cmd: bool, blower_cmd: bool, pump_cmd: bool, heater_cmd: bool):
+    GPIO.output(RELAY_PIN_SOLENOID, relay_level("solenoid", valve_cmd))
+    GPIO.output(RELAY_PIN_FAN, relay_level("fan", blower_cmd))
+    GPIO.output(RELAY_PIN_PUMP, relay_level("pump", pump_cmd))
+    GPIO.output(RELAY_PIN_HEATER, relay_level("heater", heater_cmd))
+
+
+# 4. SENSOR READING
+def get_device_folders():
+    return glob.glob(BASE_DIR + '28*')
+
+
+def read_airtemp(channel):
+    try:
+        result = subprocess.run(
+            ["smtc", "analog", "read", str(channel)],
+            capture_output=True,
+            text=True
+        )
+        raw_out=result.stdout.strip()
+        raw_err=result.stderr.strip()
+        
+        print(f"[DEBUG] channel {channel} stdout: '{raw_out}'")
+        print(f"[DEBUG] channel {channel} stderr: '{raw_err}'")
+        print(f"[DEBUG] channel {channel} returncode: {result.returncode}")
+        
+        return float(raw_out)
+    
+        except Exception as e:
+            print(f"[DEBUG] failed reading channel {channel} : {e}")
+            return none
+
+
+
+def read_watertemp(device_file):
+    try:
+        with open(device_file, 'r') as f:
+            lines = f.readlines()
+
+        retry = 0
+        while lines[0].strip()[-3:] != 'YES':
+            time.sleep(0.2)
+            with open(device_file, 'r') as f:
+                lines = f.readlines()
+            retry += 1
+            if retry > 5:
+                return None
+
+        equals_pos = lines[1].find('t=')
+        if equals_pos != -1:
+            temp_c = float(lines[1][equals_pos + 2:]) / 1000.0
+            return temp_c
+
+        return None
+
+    except Exception:
+        return None
+
+
+def read_all_sensors():
+    sensor_data = {}
+    device_folders = get_device_folders()
+
+    for folder in device_folders:
+        device_id = folder.split('/')[-1]
+        watertemp = read_watertemp(folder + '/w1_slave')
+
+        if watertemp is not None and device_id in SENSOR_MAP:
+            sensor_data[SENSOR_MAP[device_id]] = watertemp
+
+    return sensor_data
+
+
+def print_detected_sensor_ids():
+    print("Detected 1-wire sensor IDs:")
+    for folder in get_device_folders():
+        print("  ", folder.split('/')[-1])
+
+
+# 5. DECISION FSM
+def tes_ahu_simple(T_amb: float, T_des: float, T_tank: float, peak_state: int):
+    T_full = 60.0
+    T_low = 40.0
+
+    need_heat = T_amb < T_des
+    tank_low = T_tank <= T_low
+    tank_full = T_tank >= T_full
+
+    ahu_state = AHUState.IDLE
+    tes_state = TESState.IDLE
+    case_id = 0
+
+    if need_heat:
+        if peak_state == 1:
+            if not tank_low:
+                ahu_state = AHUState.VENT
+                tes_state = TESState.DISCHARGE
+                case_id = 1
+            else:
+                ahu_state = AHUState.NORMAL
+                tes_state = TESState.IDLE
+                case_id = 2
+        else:
+            if not tank_full:
+                ahu_state = AHUState.NORMAL
+                tes_state = TESState.CHARGING
+                case_id = 3
+            else:
+                ahu_state = AHUState.NORMAL
+                tes_state = TESState.IDLE
+                case_id = 4
+    else:
+        if peak_state == 1:
+            ahu_state = AHUState.IDLE
+            tes_state = TESState.IDLE
+            case_id = 5
+        else:
+            if not tank_full:
+                ahu_state = AHUState.IDLE
+                tes_state = TESState.CHARGING
+                case_id = 6
+            else:
+                ahu_state = AHUState.IDLE
+                tes_state = TESState.IDLE
+                case_id = 7
+
+    return ahu_state, tes_state, case_id
+
+
+# 6. ACTUATION FSM
+def actuation_fsm(ahu_state: AHUState, tes_state: TESState):
+    valve_cmd = False
+    blower_cmd = False
+    pump_cmd = False
+    heater_cmd = False
+
+    if tes_state == TESState.IDLE:
+        valve_cmd = False
+        pump_cmd = False
+        heater_cmd = False
+
+    elif tes_state == TESState.CHARGING:
+        valve_cmd = False
+        pump_cmd = True
+        heater_cmd = True
+
+    elif tes_state == TESState.DISCHARGE:
+        valve_cmd = True
+        pump_cmd = True
+        heater_cmd = False
+
+    if ahu_state == AHUState.VENT and tes_state == TESState.DISCHARGE:
+        blower_cmd = True
+    else:
+        blower_cmd = False
+
+    return valve_cmd, blower_cmd, pump_cmd, heater_cmd
+
+
+# 7. OTHER INPUTS
+def read_peak_state():
+    # replace later with your schedule / utility signal
+    return 1
+
+
+# 8. CSV LOGGING
+def initialize_log():
+    if not os.path.exists(LOG_FILE):
+        with open(LOG_FILE, mode='w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "timestamp",
+                "thermostat_temp_C",
+                "fan_inlet_temp_C",
+                "T_des_C",
+                "T_tank_C",
+                "peak_state",
+                "ahu_state",
+                "tes_state",
+                "case_id",
+                "valve_cmd",
+                "blower_cmd",
+                "pump_cmd",
+                "heater_cmd"
+            ])
+
+
+def log_data(thermostat_temp, fan_inlet_temp, T_des, T_tank, peak_state,
+             ahu_state, tes_state, case_id,
+             valve_cmd, blower_cmd, pump_cmd, heater_cmd):
+    with open(LOG_FILE, mode='a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            time.strftime("%Y-%m-%d %H:%M:%S"),
+            thermostat_temp,
+            fan_inlet_temp,
+            T_des,
+            T_tank,
+            peak_state,
+            ahu_state.name,
+            tes_state.name,
+            case_id,
+            valve_cmd,
+            blower_cmd,
+            pump_cmd,
+            heater_cmd
+        ])
+
+
+# 9. MAIN LOOP
+def main():
+    setup_gpio()
+    initialize_log()
+    print_detected_sensor_ids()
+
+    try:
+        while True:
+            # ---- Read analog air temperature sensors ----
+            thermostat_temp = read_airtemp(5)   # room / thermostat temp
+            fan_inlet_temp = read_airtemp(6)    # inlet of fan temp
+
+            # ---- Read 1-wire water tank sensor ----
+            sensors = read_all_sensors()
+
+            if thermostat_temp is None or fan_inlet_temp is None:
+                print("WARNING: Missing analog TC data")
+                time.sleep(1)
+                continue
+
+            if "tank" not in sensors:
+                print("WARNING: Missing tank sensor data")
+                print("Sensors found:", sensors)
+                time.sleep(1)
+                continue
+
+            # Inputs
+            T_amb = thermostat_temp         # ambient now comes from TC
+            T_tank = sensors["tank"]
+            T_des = 25.0                    # temporary placeholder until GUI is added
+            peak_state = read_peak_state()
+
+            # Decision FSM
+            ahu_state, tes_state, case_id = tes_ahu_simple(
+                T_amb, T_des, T_tank, peak_state
+            )
+
+            # Actuation FSM
+            valve_cmd, blower_cmd, pump_cmd, heater_cmd = actuation_fsm(
+                ahu_state, tes_state
+            )
+
+            # Safety cutoff
+            if T_tank > 70.0:
+                heater_cmd = False
+
+            # Output to relays
+            set_outputs(valve_cmd, blower_cmd, pump_cmd, heater_cmd)
+
+            # Print live data
+            print("------------------------------------------------")
+            print(f"Thermostat Temp (Room): {thermostat_temp:.2f} C")
+            print(f"Fan Inlet Temp:        {fan_inlet_temp:.2f} C")
+            print(f"Tank Temp:             {T_tank:.2f} C")
+            print(f"Desired Temp:          {T_des:.2f} C")
+            print(f"Peak State:            {peak_state}")
+            print(f"AHU State:             {ahu_state.name}")
+            print(f"TES State:             {tes_state.name}")
+            print(f"Case ID:               {case_id}")
+            print(f"Valve={valve_cmd}, Blower={blower_cmd}, Pump={pump_cmd}, Heater={heater_cmd}")
+
+            # Save to CSV
+            log_data(
+                thermostat_temp, fan_inlet_temp, T_des, T_tank, peak_state,
+                ahu_state, tes_state, case_id,
+                valve_cmd, blower_cmd, pump_cmd, heater_cmd
+            )
+
+            time.sleep(2)
+
+    except KeyboardInterrupt:
+        print("Program stopped by user.")
+
+    finally:
+        set_outputs(False, False, False, False)
+        GPIO.cleanup()
+        print("All relays OFF. GPIO cleaned up.")
+
+
+if __name__ == "__main__":
+    main()

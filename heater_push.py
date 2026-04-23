@@ -1,7 +1,7 @@
 import RPi.GPIO as GPIO
 import time
 
-RELAY_PIN = 23
+RELAY_PIN = 27
 
 GPIO.setwarnings(False)
 
@@ -13,7 +13,7 @@ GPIO.setup(RELAY_PIN, GPIO.OUT)
 # working
 while True:
     GPIO.output(RELAY_PIN, GPIO.HIGH)
-    time.sleep(5)
+    time.sleep(30)
     GPIO.output(RELAY_PIN, GPIO.LOW)
     time.sleep(5)
     
