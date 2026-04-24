@@ -10,121 +10,174 @@ measure time it takes for enclosure temperature to rise 20 deg C.
 
 import time
 import csv
+import subprocess
 
-LOG_FILE = "hex_enclosure_test.csv"
-SUMMARY_FILE = "hex_enclosure_summary.csv"
+# =========================================================
+# GPIO (safe standalone fallback)
+# =========================================================
+try:
+    import RPi.GPIO as GPIO
+    GPIO_AVAILABLE = True
+except ImportError:
+    GPIO_AVAILABLE = False
+
+    class MockGPIO:
+        BCM = "BCM"
+        OUT = "OUT"
+        HIGH = 1
+        LOW = 0
+
+        def setmode(self, *args): pass
+        def setwarnings(self, *args): pass
+        def setup(self, *args): pass
+        def output(self, *args): pass
+        def cleanup(self): pass
+
+    GPIO = MockGPIO()
+
+# =========================================================
+# GPIO PINS
+# =========================================================
+RELAY_PIN_FAN = 24
+RELAY_PIN_PUMP = 17
+RELAY_PIN_HEATER = 27
+
+# =========================================================
+# FILES
+# =========================================================
+LOG_FILE = "enclosure_only_test.csv"
+SUMMARY_FILE = "enclosure_summary.csv"
 
 TEMP_RISE_TARGET = 20.0
-MAX_TEST_TIME = 2 * 3600  # 2 hours max
+MAX_TEST_TIME = 2 * 3600  # 2 hours
 
-# =========================
+# =========================================================
+# GPIO CONTROL
+# =========================================================
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+
+    GPIO.setup(RELAY_PIN_FAN, GPIO.OUT)
+    GPIO.setup(RELAY_PIN_PUMP, GPIO.OUT)
+    GPIO.setup(RELAY_PIN_HEATER, GPIO.OUT)
+
+    set_outputs(False, False, False)
+
+def set_outputs(fan, pump, heater):
+    GPIO.output(RELAY_PIN_FAN, GPIO.HIGH if fan else GPIO.LOW)
+    GPIO.output(RELAY_PIN_PUMP, GPIO.HIGH if pump else GPIO.LOW)
+    GPIO.output(RELAY_PIN_HEATER, GPIO.HIGH if heater else GPIO.LOW)
+
+# =========================================================
+# ENCLOSURE TEMPERATURE ONLY (SMTC)
+# =========================================================
+def read_temp_smtc(channel=5):
+    try:
+        result = subprocess.run(
+            ["smtc", "analog", "read", str(channel)],
+            capture_output=True,
+            text=True,
+            timeout=3
+        )
+        return float(result.stdout.strip())
+    except:
+        return None
+
+# =========================================================
 # LOGGING
-# =========================
+# =========================================================
 def initialize_log():
     with open(LOG_FILE, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
+        csv.writer(f).writerow([
             "timestamp",
-            "elapsed_time_s",
-            "T_amb",
-            "hex_inlet",
-            "hex_outlet",
-            "blower_cmd",
+            "elapsed_s",
+            "T_enclosure",
+            "fan_cmd",
             "pump_cmd",
             "heater_cmd"
         ])
 
-def log_data(start_time, T_amb, hex_in, hex_out, blower_cmd, pump_cmd, heater_cmd):
+def log_row(start_time, T, fan, pump, heater):
     with open(LOG_FILE, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
+        csv.writer(f).writerow([
             time.strftime("%Y-%m-%d %H:%M:%S"),
             time.time() - start_time,
-            T_amb,
-            hex_in,
-            hex_out,
-            blower_cmd,
-            pump_cmd,
-            heater_cmd
+            T,
+            fan,
+            pump,
+            heater
         ])
 
 def save_summary(rise_time):
     with open(SUMMARY_FILE, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["time_to_rise_20C_min"])
-        writer.writerow([rise_time / 60])
+        csv.writer(f).writerow(["time_to_20C_rise_min"])
+        csv.writer(f).writerow([rise_time / 60])
 
-# =========================
+# =========================================================
 # MAIN TEST
-# =========================
-def run_hex_enclosure_test():
+# =========================================================
+def run_test():
     initialize_log()
     setup_gpio()
 
-    start_temp = None
     start_time = time.time()
-    stable_counter = 0
+    start_temp = None
+    stable_count = 0
+
+    print("Running enclosure-only thermal rise test...")
 
     try:
         while True:
-            sensors = read_all_sensors()
-            T_amb = read_temp_smtc(5)
+            T = read_temp_smtc(5)
 
-            hex_in = sensors.get("hex_inlet")
-            hex_out = sensors.get("hex_outlet")
-
-            if T_amb is None:
+            if T is None:
                 continue
 
-            # Initialize start temp
             if start_temp is None:
-                start_temp = T_amb
+                start_temp = T
 
-            elapsed_total = time.time() - start_time
-            if elapsed_total > MAX_TEST_TIME:
-                print("Test timed out")
-                break
+            # =========================================
+            # FIXED OPERATING MODE (no TES coupling)
+            # =========================================
+            fan = True
+            pump = True
+            heater = False   # keep OFF unless you're explicitly heating enclosure
 
-            # TES DISCHARGE MODE
-            blower_cmd = True
-            pump_cmd = True
-            heater_cmd = False
+            set_outputs(fan, pump, heater)
 
-            set_outputs(False, blower_cmd, pump_cmd, heater_cmd)
-
-            # Check 20°C rise with stability
-            if T_amb >= start_temp + TEMP_RISE_TARGET:
-                stable_counter += 1
+            # =========================================
+            # 20°C rise detection (stable requirement)
+            # =========================================
+            if T >= start_temp + TEMP_RISE_TARGET:
+                stable_count += 1
             else:
-                stable_counter = 0
+                stable_count = 0
 
-            if stable_counter >= 5:
+            if stable_count >= 5:
                 rise_time = time.time() - start_time
-                print(f"20°C rise achieved in {rise_time/60:.2f} min")
+                print(f"20°C rise time: {rise_time/60:.2f} min")
                 save_summary(rise_time)
                 break
 
-            log_data(
-                start_time,
-                T_amb,
-                hex_in,
-                hex_out,
-                blower_cmd,
-                pump_cmd,
-                heater_cmd
-            )
+            log_row(start_time, T, fan, pump, heater)
 
-            print(f"T_amb: {T_amb:.2f} °C | HEX ΔT: {(hex_out - hex_in) if hex_in and hex_out else None}")
+            print(f"T_enclosure = {T:.2f} °C")
+
+            # safety timeout
+            if time.time() - start_time > MAX_TEST_TIME:
+                print("Test timed out")
+                break
 
             time.sleep(1)
 
     finally:
-        set_outputs(False, False, False, False)
+        set_outputs(False, False, False)
         GPIO.cleanup()
-        print("Test complete. System safe.")
+        print("Test complete and system shut down safely.")
 
-# =========================
+# =========================================================
 # RUN
-# =========================
+# =========================================================
 if __name__ == "__main__":
-    run_hex_enclosure_test()
+    run_test()
