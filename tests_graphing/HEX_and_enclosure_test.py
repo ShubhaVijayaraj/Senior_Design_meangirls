@@ -12,6 +12,7 @@ import time
 import csv
 import subprocess
 
+print("GPIO AVAILABLE:", GPIO_AVAILABLE)
 # =========================================================
 # GPIO (safe standalone fallback)
 # =========================================================
@@ -21,19 +22,26 @@ try:
 except ImportError:
     GPIO_AVAILABLE = False
 
-    class MockGPIO:
-        BCM = "BCM"
-        OUT = "OUT"
-        HIGH = 1
-        LOW = 0
+class MockGPIO:
+    BCM = "BCM"
+    OUT = "OUT"
+    HIGH = 1
+    LOW = 0
 
-        def setmode(self, *args): pass
-        def setwarnings(self, *args): pass
-        def setup(self, *args): pass
-        def output(self, *args): pass
-        def cleanup(self): pass
+    def setmode(self, mode):
+        print("[MOCK GPIO] setmode:", mode)
 
-    GPIO = MockGPIO()
+    def setwarnings(self, flag):
+        pass
+
+    def setup(self, pin, mode):
+        print(f"[MOCK GPIO] setup pin {pin}")
+
+    def output(self, pin, value):
+        print(f"[MOCK GPIO] pin {pin} -> {value}")
+
+    def cleanup(self):
+        print("[MOCK GPIO] cleanup")
 
 # =========================================================
 # GPIO PINS
@@ -62,18 +70,26 @@ def set_outputs(fan, pump, heater):
     GPIO.output(RELAY_PIN_HEATER, GPIO.HIGH if heater else GPIO.LOW)
 
 def setup_gpio():
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setwarnings(False)
+    if GPIO_AVAILABLE:
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
 
-    GPIO.setup(RELAY_PIN_FAN, GPIO.OUT)
-    GPIO.setup(RELAY_PIN_PUMP, GPIO.OUT)
-    GPIO.setup(RELAY_PIN_HEATER, GPIO.OUT)
+        GPIO.setup(RELAY_PIN_FAN, GPIO.OUT)
+        GPIO.setup(RELAY_PIN_PUMP, GPIO.OUT)
+        GPIO.setup(RELAY_PIN_HEATER, GPIO.OUT)
 
-    shutdown_all()
-
-def shutdown_all():
     set_outputs(False, False, False)
-    GPIO.cleanup()
+    
+def shutdown_all():
+    try:
+        set_outputs(False, False, False)
+    except:
+        pass
+
+    try:
+        GPIO.cleanup()
+    except:
+        pass
 
 # =========================================================
 # SMTC READ (THERMOCOUPLES)
