@@ -36,53 +36,75 @@ LOG_FILE = 'tes_ahu_log.csv'
 
 RELAY_PIN_SOLENOID, RELAY_PIN_FAN = 23, 24
 RELAY_PIN_PUMP, RELAY_PIN_HEATER = 17, 27
-ACTIVE_HIGH = {'solenoid': False, 'fan': True, 'pump': True, 'heater': True}
+
+ACTIVE_HIGH = {
+    'solenoid': False,
+    'fan': True,
+    'pump': True,
+    'heater': True,
+}
+
+def relay_level(device_name: str, command_on: bool) -> int:
+    active_high = ACTIVE_HIGH[device_name]
+    if active_high:
+        return GPIO.HIGH if command_on else GPIO.LOW
+    return GPIO.LOW if command_on else GPIO.HIGH
+
+def setup_gpio():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    GPIO.setup(RELAY_PIN_SOLENOID, GPIO.OUT)
+    GPIO.setup(RELAY_PIN_FAN, GPIO.OUT)
+    GPIO.setup(RELAY_PIN_PUMP, GPIO.OUT)
+    GPIO.setup(RELAY_PIN_HEATER, GPIO.OUT)
+    set_outputs(False, False, False, False)
+
+def set_outputs(valve_cmd: bool, blower_cmd: bool, pump_cmd: bool, heater_cmd: bool):
+    GPIO.output(RELAY_PIN_SOLENOID, relay_level('solenoid', valve_cmd))
+    GPIO.output(RELAY_PIN_FAN, relay_level('fan', blower_cmd))
+    GPIO.output(RELAY_PIN_PUMP, relay_level('pump', pump_cmd))
+    GPIO.output(RELAY_PIN_HEATER, relay_level('heater', heater_cmd))
 
 # =========================================================
-# 2. STATE DEFINITIONS & FSM LOGIC (Audited Line-by-Line)
+# 2. STATE DEFINITIONS & FSM LOGIC
 # =========================================================
 class AHUState(IntEnum): IDLE = 0; NORMAL = 1; VENT = 2
 class TESState(IntEnum): IDLE = 0; CHARGING = 1; DISCHARGE = 2
 
-def relay_level(dev, cmd):
-    return (GPIO.HIGH if cmd else GPIO.LOW) if ACTIVE_HIGH[dev] else (GPIO.LOW if cmd else GPIO.HIGH)
+def tes_ahu_simple(T_amb, T_des, T_tank, peak_state):
+    T_full, T_low = 60.0, 40.0
+    need_heat = T_amb < T_des
+    tank_low, tank_full = T_tank <= T_low, T_tank >= T_full
+    ahu_state, tes_state, case_id = AHUState.IDLE, TESState.IDLE, 0
 
-def set_outputs(v, b, p, h):
-    GPIO.output(RELAY_PIN_SOLENOID, relay_level('solenoid', v))
-    GPIO.output(RELAY_PIN_FAN, relay_level('fan', b))
-    GPIO.output(RELAY_PIN_PUMP, relay_level('pump', p))
-    GPIO.output(RELAY_PIN_HEATER, relay_level('heater', h))
-
-def tes_ahu_simple(T_amb, T_des, T_tank, peak):
-    T_f, T_l = 60.0, 40.0
-    need_h = T_amb < T_des
-    t_low, t_full = T_tank <= T_l, T_tank >= T_f
-    ahu, tes, cid = AHUState.IDLE, TESState.IDLE, 0
-    if need_h:
-        if peak == 1:
-            if not t_low: ahu, tes, cid = AHUState.VENT, TESState.DISCHARGE, 1
-            else: ahu, tes, cid = AHUState.NORMAL, TESState.IDLE, 2
+    if need_heat:
+        if peak_state == 1:
+            if not tank_low: ahu_state, tes_state, case_id = AHUState.VENT, TESState.DISCHARGE, 1
+            else: ahu_state, tes_state, case_id = AHUState.NORMAL, TESState.IDLE, 2
         else:
-            if not t_full: ahu, tes, cid = AHUState.NORMAL, TESState.CHARGING, 3
-            else: ahu, tes, cid = AHUState.NORMAL, TESState.IDLE, 4
+            if not tank_full: ahu_state, tes_state, case_id = AHUState.NORMAL, TESState.CHARGING, 3
+            else: ahu_state, tes_state, case_id = AHUState.NORMAL, TESState.IDLE, 4
     else:
-        if peak == 1: ahu, tes, cid = AHUState.IDLE, TESState.IDLE, 5
+        if peak_state == 1: ahu_state, tes_state, case_id = AHUState.IDLE, TESState.IDLE, 5
         else:
-            if not t_full: ahu, tes, cid = AHUState.IDLE, TESState.CHARGING, 6
-            else: ahu, tes, cid = AHUState.IDLE, TESState.IDLE, 7
-    return ahu, tes, cid
+            if not tank_full: ahu_state, tes_state, case_id = AHUState.IDLE, TESState.CHARGING, 6
+            else: ahu_state, tes_state, case_id = AHUState.IDLE, TESState.IDLE, 7
+    return ahu_state, tes_state, case_id
 
 def actuation_fsm(ahu_state, tes_state):
     valve_cmd = blower_cmd = pump_cmd = heater_cmd = False
+    
     if tes_state == TESState.CHARGING:
-        pump_cmd = False # Per your latest FSM update
+        pump_cmd = False
         heater_cmd = True
     elif tes_state == TESState.DISCHARGE:
         pump_cmd = True
         blower_cmd = True 
+
     if ahu_state == AHUState.VENT and tes_state == TESState.DISCHARGE:
         blower_cmd = True
-        pump_cmd = False # Per your latest FSM update
+        pump_cmd = True # Ensuring pump stays on for heat exchange
+    
     return valve_cmd, blower_cmd, pump_cmd, heater_cmd
 
 # =========================================================
@@ -171,7 +193,6 @@ class DashboardWidget(QtWidgets.QWidget):
         self.btn_sys = self.make_styled_button("HEAT", 30, 260, 160, active=False)
         self.btn_fan_val = self.make_styled_button("OFF", W - 190, 140, 160, active=False)
         self.btn_state_val = self.make_styled_button("IDLE", W - 240, 255, 210, active=False); self.btn_state_val.setFixedHeight(75)
-
         self.temp_val_btn = QtWidgets.QPushButton(self); self.temp_val_btn.setGeometry(int(W/2) - 150, 185, 300, 100); self.temp_val_btn.clicked.connect(self.p.toggle_units); self.temp_val_btn.setStyleSheet("QPushButton { color: white; font-size: 75px; font-weight: bold; background: transparent; border: none; } QPushButton:hover { color: rgba(255, 255, 255, 180); }")
         self.curr_text = QtWidgets.QLabel(self); self.curr_text.setGeometry(0, 425, W, 30); self.curr_text.setAlignment(QtCore.Qt.AlignCenter); self.curr_text.setStyleSheet("color: white; font-size: 18px;")
         self.minus_btn = QtWidgets.QPushButton("—", self); self.minus_btn.setGeometry(int(W/2) - 135, 375, 85, 42); self.minus_btn.clicked.connect(self.p.dec_temp)
@@ -197,7 +218,7 @@ class DashboardWidget(QtWidgets.QWidget):
             self.peak_btn.setStyleSheet(f"QPushButton {{ color: {peak_color}; font-size: {int(14 * avg_scale)}px; font-weight: bold; background: transparent; border: none; text-align: right; }} QPushButton:hover {{ color: white; }}"); self.peak_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.peak_btn.setText("PEAK" if self.p.peak_state else "OFF-PEAK")
         pill_base = f"background: transparent; color: rgb(110, 150, 200); border: 2px solid rgb(70, 100, 140); border-radius: {int(20*avg_scale)}px; font-size: {int(24*avg_scale)}px;"
-        final_style = f"QPushButton {{ {pill_base} }}" if is_smart else f"QPushButton {{ {pill_base} }} QPushButton:hover {{ border: 2px solid rgb(110, 150, 200); background-color: rgba(110, 150, 200, 25); }}"
+        final_style = f"QPushButton {{ {pill_base} }}" if is_smart else f"QPushButton {{ {pill_style_base} }} QPushButton:hover {{ border: 2px solid rgb(110, 150, 200); background-color: rgba(110, 150, 200, 25); }}"
         self.minus_btn.setCursor(QtCore.Qt.ArrowCursor if is_smart else QtCore.Qt.PointingHandCursor); self.plus_btn.setCursor(QtCore.Qt.ArrowCursor if is_smart else QtCore.Qt.PointingHandCursor)
         self.minus_btn.setStyleSheet(final_style); self.plus_btn.setStyleSheet(final_style)
         self.btn_fan_val.setText("ON" if self.p.blower_cmd else "OFF")
@@ -222,7 +243,7 @@ class ScalingStack(QtWidgets.QStackedWidget):
                 hf = page.table.horizontalHeader().font(); hf.setPointSize(int(11 * avg)); page.table.horizontalHeader().setFont(hf)
 
 # =========================================================
-# 4. THERMOSTAT APP
+# 4. MAIN APPLICATION
 # =========================================================
 
 class ThermostatApp(QtWidgets.QMainWindow):
@@ -234,8 +255,7 @@ class ThermostatApp(QtWidgets.QMainWindow):
         self.blower_cmd, self.tes_state_text = False, "IDLE"
         self.ahu_state = AHUState.IDLE
 
-        GPIO.setmode(GPIO.BCM); GPIO.setwarnings(False)
-        for p in [RELAY_PIN_SOLENOID, RELAY_PIN_FAN, RELAY_PIN_PUMP, RELAY_PIN_HEATER]: GPIO.setup(p, GPIO.OUT)
+        setup_gpio()
         if not os.path.exists(LOG_FILE):
             with open(LOG_FILE, 'w', newline='') as f:
                 csv.writer(f).writerow(['timestamp','T_amb','T_des','T_tank','peak','ahu','tes','cid','v','b','p','h'])
@@ -254,12 +274,15 @@ class ThermostatApp(QtWidgets.QMainWindow):
         self.timer = QtCore.QTimer(); self.timer.timeout.connect(self.global_update); self.timer.start(1000)
 
     def global_update(self):
+        # 1. SERIAL LOGGING & SENSOR READ
         try:
             res = subprocess.run(['smtc', 'analog', 'read', '5'], capture_output=True, text=True, timeout=1)
             self.current_temp_c = float(res.stdout.strip())
         except: pass
-        for f in glob.glob(BASE_DIR + '28*'):
-            if f.split('/')[-1] in SENSOR_MAP:
+        
+        for f in glob.glob(BASE_DIR + '*'):
+            id = f.split('/')[-1]
+            if id in SENSOR_MAP:
                 try:
                     with open(f + '/w1_slave', 'r') as s:
                         lines = s.readlines()
@@ -270,6 +293,7 @@ class ThermostatApp(QtWidgets.QMainWindow):
             now = datetime.now(); s_s, s_e = self.page3.spinners[now.weekday()]
             self.peak_state = (s_s.value <= now.hour < s_e.value)
         
+        # 2. FSM CYCLE (Serial Printing Restored)
         ahu, tes, cid = tes_ahu_simple(self.current_temp_c, self.set_temp_c, self.tank_temp_c, 1 if self.peak_state else 0)
         v, b, p, h = actuation_fsm(ahu, tes)
         if self.tank_temp_c > 70.0: h = False 
@@ -277,6 +301,17 @@ class ThermostatApp(QtWidgets.QMainWindow):
         
         self.ahu_state = ahu
         self.blower_cmd, self.tes_state_text = b, "DISCHARGING" if tes == TESState.DISCHARGE else tes.name
+
+        # --- RESTORED SERIAL OUTPUTS ---
+        print('\n================================================')
+        print(f'SYSTEM STATUS - {datetime.now().strftime("%I:%M:%S %p")}')
+        print(f'Mode: {"PEAK" if self.peak_state else "OFF-PEAK"}')
+        print(f'T_amb: {self.current_temp_c:.2f} °C | T_tank: {self.tank_temp_c:.2f} °C | T_des: {self.set_temp_c:.2f} °C')
+        print('--- FSM STATES ---')
+        print(f'AHU State: {ahu.name} | TES State: {tes.name} | Case ID: {cid}')
+        print('--- COMPONENT STATUS ---')
+        print(f'Fan: {"ON" if b else "OFF"} | Pump: {"ON" if p else "OFF"} | Heater: {"ON" if h else "OFF"}')
+        print('================================================\n')
 
         with open(LOG_FILE, 'a', newline='') as f:
             csv.writer(f).writerow([datetime.now().strftime('%Y-%m-%d %H:%M:%S'), self.current_temp_c, self.set_temp_c, self.tank_temp_c, int(self.peak_state), ahu.name, tes.name, cid, v, b, p, h])
