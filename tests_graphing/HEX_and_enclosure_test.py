@@ -45,15 +45,22 @@ RELAY_PIN_HEATER = 27
 # =========================================================
 # FILES
 # =========================================================
-LOG_FILE = "enclosure_only_test.csv"
+LOG_FILE = "enclosure_hex_test.csv"
 SUMMARY_FILE = "enclosure_summary.csv"
 
 TEMP_RISE_TARGET = 20.0
-MAX_TEST_TIME = 2 * 3600  # 2 hours
+MAX_TEST_TIME = 2 * 3600  # safety limit
+
+ASSUMED_AMBIENT = 21.0  # optional reference
 
 # =========================================================
 # GPIO CONTROL
 # =========================================================
+def set_outputs(fan, pump, heater):
+    GPIO.output(RELAY_PIN_FAN, GPIO.HIGH if fan else GPIO.LOW)
+    GPIO.output(RELAY_PIN_PUMP, GPIO.HIGH if pump else GPIO.LOW)
+    GPIO.output(RELAY_PIN_HEATER, GPIO.HIGH if heater else GPIO.LOW)
+
 def setup_gpio():
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
@@ -62,17 +69,16 @@ def setup_gpio():
     GPIO.setup(RELAY_PIN_PUMP, GPIO.OUT)
     GPIO.setup(RELAY_PIN_HEATER, GPIO.OUT)
 
+    shutdown_all()
+
+def shutdown_all():
     set_outputs(False, False, False)
-
-def set_outputs(fan, pump, heater):
-    GPIO.output(RELAY_PIN_FAN, GPIO.HIGH if fan else GPIO.LOW)
-    GPIO.output(RELAY_PIN_PUMP, GPIO.HIGH if pump else GPIO.LOW)
-    GPIO.output(RELAY_PIN_HEATER, GPIO.HIGH if heater else GPIO.LOW)
+    GPIO.cleanup()
 
 # =========================================================
-# ENCLOSURE TEMPERATURE ONLY (SMTC)
+# SMTC READ (THERMOCOUPLES)
 # =========================================================
-def read_temp_smtc(channel=5):
+def read_temp_smtc(channel):
     try:
         result = subprocess.run(
             ["smtc", "analog", "read", str(channel)],
@@ -92,18 +98,30 @@ def initialize_log():
         csv.writer(f).writerow([
             "timestamp",
             "elapsed_s",
-            "T_enclosure",
-            "fan_cmd",
-            "pump_cmd",
-            "heater_cmd"
+            "T_enclosure_CH5",
+            "T_hex_front_CH6",
+            "HEX_inlet",
+            "HEX_outlet",
+            "HEX_deltaT",
+            "fan",
+            "pump",
+            "heater"
         ])
 
-def log_row(start_time, T, fan, pump, heater):
+def log_row(start_time, T5, T6, hex_in, hex_out, fan, pump, heater):
+    deltaT = None
+    if hex_in is not None and hex_out is not None:
+        deltaT = hex_out - hex_in
+
     with open(LOG_FILE, "a", newline="") as f:
         csv.writer(f).writerow([
             time.strftime("%Y-%m-%d %H:%M:%S"),
             time.time() - start_time,
-            T,
+            T5,
+            T6,
+            hex_in,
+            hex_out,
+            deltaT,
             fan,
             pump,
             heater
@@ -125,31 +143,40 @@ def run_test():
     start_temp = None
     stable_count = 0
 
-    print("Running enclosure-only thermal rise test...")
+    print("Starting enclosure + HEX thermal test...")
 
     try:
         while True:
-            T = read_temp_smtc(5)
+            # =================================================
+            # TEMPERATURE READINGS
+            # =================================================
+            T5 = read_temp_smtc(5)  # enclosure
+            T6 = read_temp_smtc(6)  # in front of HEX
 
-            if T is None:
+            # If either fails, skip iteration
+            if T5 is None:
                 continue
 
             if start_temp is None:
-                start_temp = T
+                start_temp = T5
 
-            # =========================================
-            # FIXED OPERATING MODE (no TES coupling)
-            # =========================================
+            # Optional HEX temps (if you still have sensors)
+            hex_in = None
+            hex_out = None
+
+            # =================================================
+            # OPERATING MODE (fan + pump only)
+            # =================================================
             fan = True
             pump = True
-            heater = False   # keep OFF unless you're explicitly heating enclosure
+            heater = False
 
             set_outputs(fan, pump, heater)
 
-            # =========================================
-            # 20°C rise detection (stable requirement)
-            # =========================================
-            if T >= start_temp + TEMP_RISE_TARGET:
+            # =================================================
+            # ENCLOSURE RISE CONDITION (20°C)
+            # =================================================
+            if T5 >= start_temp + TEMP_RISE_TARGET:
                 stable_count += 1
             else:
                 stable_count = 0
@@ -160,9 +187,12 @@ def run_test():
                 save_summary(rise_time)
                 break
 
-            log_row(start_time, T, fan, pump, heater)
+            # =================================================
+            # LOG DATA
+            # =================================================
+            log_row(start_time, T5, T6, hex_in, hex_out, fan, pump, heater)
 
-            print(f"T_enclosure = {T:.2f} °C")
+            print(f"Enclosure (CH5): {T5:.2f} °C | HEX front (CH6): {T6:.2f} °C")
 
             # safety timeout
             if time.time() - start_time > MAX_TEST_TIME:
@@ -172,9 +202,8 @@ def run_test():
             time.sleep(1)
 
     finally:
-        set_outputs(False, False, False)
-        GPIO.cleanup()
-        print("Test complete and system shut down safely.")
+        shutdown_all()
+        print("All systems OFF. GPIO cleaned up.")
 
 # =========================================================
 # RUN
