@@ -393,7 +393,15 @@ class DashboardWidget(QtWidgets.QWidget):
             self.peak_btn.setStyleSheet(f"QPushButton {{ color: {peak_color}; font-size: {int(14 * avg_scale)}px; font-weight: bold; background: transparent; border: none; text-align: right; }} QPushButton:hover {{ color: white; }}"); self.peak_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.peak_btn.setText("PEAK" if self.p.peak_state else "OFF-PEAK")
         pill_base = f"background: transparent; color: rgb(110, 150, 200); border: 2px solid rgb(70, 100, 140); border-radius: {int(20*avg_scale)}px; font-size: {int(24*avg_scale)}px;"
-        final_style = f"QPushButton {{ {pill_base} }}" if is_smart else f"QPushButton {{ {pill_style_base} }} QPushButton:hover {{ border: 2px solid rgb(110, 150, 200); background-color: rgba(110, 150, 200, 25); }}"
+        final_style = f"QPushButton {{ {pill_base} }}" if is_smart else f"""
+        QPushButton {{
+            {pill_base}
+        }}
+        QPushButton:hover {{
+            border: 2px solid rgb(110, 150, 200);
+            background-color: rgba(110, 150, 200, 25);
+        }}
+        """
         self.minus_btn.setCursor(QtCore.Qt.ArrowCursor if is_smart else QtCore.Qt.PointingHandCursor); self.plus_btn.setCursor(QtCore.Qt.ArrowCursor if is_smart else QtCore.Qt.PointingHandCursor)
         self.minus_btn.setStyleSheet(final_style); self.plus_btn.setStyleSheet(final_style)
         self.btn_fan_val.setText("ON" if self.p.blower_cmd else "OFF")
